@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Optional
 
 TRAIL_DIR = Path(__file__).resolve().parent
+BASE_URL = ''  # e.g. /nexus-site-builder for GitHub project Pages
+
 ASSET_IMAGES = [
     "hero-wellness.jpg", "home-featured.jpg", "beauty-face.jpg", "skincare-products.jpg",
     "moisturizer.jpg", "body-care.jpg", "body-exfoliation.jpg", "lab-science.jpg",
@@ -128,7 +130,7 @@ class ImageRegistry:
             fetched = self._try_download(url, dest) if self.fetch_remote else False
             if not fetched:
                 self._copy_placeholder(dest)
-        return f'/assets/media/{name}'
+        return u(f'/assets/media/{name}')
 
     def _try_download(self, url: str, dest: Path) -> bool:
         candidates = [url]
@@ -167,6 +169,15 @@ class SiteData:
     footer_cols: list[tuple[str, list[tuple[str, str]]]] = field(default_factory=list)
     articles: list[Article] = field(default_factory=list)
     categories: list[Category] = field(default_factory=list)
+
+
+def u(path: str) -> str:
+    """Prefix paths for GitHub project Pages (e.g. /nexus-site-builder)."""
+    if not path or path.startswith('http'):
+        return path
+    if not path.startswith('/'):
+        path = '/' + path
+    return (BASE_URL.rstrip('/') + path) if BASE_URL else path
 
 
 def slugify(text: str) -> str:
@@ -216,6 +227,10 @@ def transform_content(content: str, images: Optional[ImageRegistry] = None) -> s
     content = re.sub(r'<h2([^>]*)>(.*?)</h2>', add_h2_ids, content, flags=re.I | re.S)
     content = re.sub(r'http://dermat\.local', '', content)
     content = re.sub(r'https://dermat\.local', '', content)
+    if BASE_URL:
+        content = re.sub(
+            r'href="(/[^"#]*)"', lambda m: f'href="{u(m.group(1))}"', content,
+        )
     return content
 
 
@@ -385,9 +400,9 @@ def extract_related(html_text: str, images: Optional[ImageRegistry] = None) -> l
 
 
 def img_for_index(i: int, article_img: str = '') -> str:
-    if article_img and article_img.startswith('/assets/'):
-        return article_img
-    return f'/assets/{ASSET_IMAGES[i % len(ASSET_IMAGES)]}'
+    if article_img:
+        return u(article_img) if article_img.startswith('/') else u(f'/{article_img}')
+    return u(f'/assets/{ASSET_IMAGES[i % len(ASSET_IMAGES)]}')
 
 
 def head_block(title: str, desc: str) -> str:
@@ -399,13 +414,13 @@ def head_block(title: str, desc: str) -> str:
   <title>{html.escape(title)}</title>
   <meta name="description" content="{html.escape(desc)}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="stylesheet" href="/assets/pub.css">
+  <link rel="stylesheet" href="{u('/assets/pub.css')}">
 </head>"""
 
 
 def shell_header(site: SiteData, active: str = '') -> str:
     nav_links = ''.join(
-        f'<a class="pub-nav__link{" is-active" if active and h == active else ""}" href="{html.escape(h)}">{html.escape(lbl)}</a>'
+        f'<a class="pub-nav__link{" is-active" if active and h == active else ""}" href="{html.escape(u(h))}">{html.escape(lbl)}</a>'
         for lbl, h in site.nav[:8]
     )
     return f"""
@@ -415,7 +430,7 @@ def shell_header(site: SiteData, active: str = '') -> str:
 <header class="pub-header">
   <div class="pub-container">
     <div class="pub-header__top">
-      <a class="pub-logo" href="/">{html.escape(site.name.lower())}</a>
+      <a class="pub-logo" href="{u('/')}">{html.escape(site.name.lower())}</a>
       <div class="pub-header__actions">
         <input type="search" class="pub-search" placeholder="Search topics…" aria-label="Search">
         <button class="pub-btn pub-btn--primary" type="button">Subscribe</button>
@@ -434,7 +449,7 @@ def shell_header(site: SiteData, active: str = '') -> str:
 def shell_footer(site: SiteData) -> str:
     cols = ''
     for title, links in site.footer_cols[:3]:
-        links_html = ''.join(f'<a href="{html.escape(h)}">{html.escape(lbl)}</a>' for lbl, h in links[:6])
+        links_html = ''.join(f'<a href="{html.escape(u(h))}">{html.escape(lbl)}</a>' for lbl, h in links[:6])
         cols += f'<div class="pub-footer__col"><h4>{html.escape(title)}</h4>{links_html}</div>'
     return f"""
 <footer class="pub-footer">
@@ -447,7 +462,7 @@ def shell_footer(site: SiteData) -> str:
   </div>
   <div class="pub-container pub-footer__bar">© {datetime.now().year} {html.escape(site.name)}. All rights reserved. For informational purposes only.</div>
 </footer>
-<script src="/assets/pub.js"></script>
+<script src="{u('/assets/pub.js')}"></script>
 <script>
 (function(){{
   var p=document.getElementById('pub-progress');
@@ -463,7 +478,7 @@ def shell_footer(site: SiteData) -> str:
 
 def trending_strip(articles: list[Article]) -> str:
     links = ''.join(
-        f'<a href="{html.escape(a.path)}">{html.escape(a.title)}</a>'
+        f'<a href="{html.escape(u(a.path))}">{html.escape(a.title)}</a>'
         for a in articles[:8]
     )
     return f"""
@@ -475,7 +490,7 @@ def trending_strip(articles: list[Article]) -> str:
 
 def card_featured(a: Article, i: int) -> str:
     img = img_for_index(i, a.image)
-    return f"""<a href="{html.escape(a.path)}" class="pub-card pub-card--featured">
+    return f"""<a href="{html.escape(u(a.path))}" class="pub-card pub-card--featured">
   <img class="pub-card__img" src="{html.escape(img)}" alt="" loading="lazy">
   <div class="pub-card__body">
     <span class="pub-card__kicker">{html.escape(a.kicker)}</span>
@@ -488,7 +503,7 @@ def card_featured(a: Article, i: int) -> str:
 
 def card_compact(a: Article, i: int) -> str:
     img = img_for_index(i + 3, a.image)
-    return f"""<a href="{html.escape(a.path)}" class="pub-card pub-card--compact">
+    return f"""<a href="{html.escape(u(a.path))}" class="pub-card pub-card--compact">
   <img class="pub-card__img" src="{html.escape(img)}" alt="" loading="lazy">
   <div><span class="pub-card__kicker">{html.escape(a.kicker)}</span>
   <h4 class="pub-card__title">{html.escape(a.title)}</h4></div>
@@ -497,7 +512,7 @@ def card_compact(a: Article, i: int) -> str:
 
 def card_tile(a: Article, i: int) -> str:
     img = img_for_index(i, a.image)
-    return f"""<a href="{html.escape(a.path)}" class="pub-card pub-card--tile">
+    return f"""<a href="{html.escape(u(a.path))}" class="pub-card pub-card--tile">
   <img class="pub-card__img" src="{html.escape(img)}" alt="" loading="lazy">
   <div class="pub-card__body"><h4 class="pub-card__title">{html.escape(a.title)}</h4></div>
 </a>"""
@@ -524,7 +539,7 @@ def rail_mosaic(articles: list[Article]) -> str:
 def rail_digest(articles: list[Article]) -> str:
     feat = ''.join(card_featured(a, i) for i, a in enumerate(articles[:2]))
     headlines = ''.join(
-        f'<a href="{html.escape(a.path)}" class="pub-card pub-card--headline"><div class="pub-card__body">'
+        f'<a href="{html.escape(u(a.path))}" class="pub-card pub-card--headline"><div class="pub-card__body">'
         f'<span class="pub-card__kicker">{html.escape(a.kicker)}</span>'
         f'<h4 class="pub-card__title">{html.escape(a.title)}</h4></div></a>'
         for a in articles[2:5]
@@ -550,7 +565,7 @@ def category_rail(section_title: str, articles: list[Article], idx: int, more_hr
   <div class="pub-container">
     <div class="pub-section__header">
       <h2 class="pub-section__title">{html.escape(section_title)}</h2>
-      <a class="pub-section__more" href="{html.escape(more_href)}">View all →</a>
+      <a class="pub-section__more" href="{html.escape(u(more_href))}">View all →</a>
     </div>
     {body}
   </div>
@@ -565,7 +580,7 @@ def render_homepage(site: SiteData) -> str:
     side = arts[1:5]
     hero = f"""
 <section class="pub-hero"><div class="pub-container pub-hero__grid">
-  <a href="{html.escape(lead.path)}" class="pub-hero__lead">
+  <a href="{html.escape(u(lead.path))}" class="pub-hero__lead">
     <img src="{html.escape(img_for_index(0, lead.image))}" alt="">
     <div class="pub-hero__lead-overlay">
       <div class="pub-hero__kicker">{html.escape(lead.kicker)}</div>
@@ -577,7 +592,7 @@ def render_homepage(site: SiteData) -> str:
 </div></section>"""
 
     quick = ''.join(
-        f'<a href="{html.escape(a.path)}" class="pub-quick-hit"><div class="pub-quick-hit__kicker">{html.escape(a.kicker)}</div>'
+        f'<a href="{html.escape(u(a.path))}" class="pub-quick-hit"><div class="pub-quick-hit__kicker">{html.escape(a.kicker)}</div>'
         f'<div class="pub-quick-hit__title">{html.escape(a.title[:50])}</div></a>'
         for a in arts[5:11]
     )
@@ -599,7 +614,7 @@ def render_homepage(site: SiteData) -> str:
             explore = site.categories or [Category(c.title, c.path) for c in []]
             if site.categories:
                 cards = ''.join(
-                    f'<a href="{html.escape(c.path)}" class="pub-explore__card">'
+                    f'<a href="{html.escape(u(c.path))}" class="pub-explore__card">'
                     f'<img src="{html.escape(c.image or img_for_index(i))}" alt="">'
                     f'<span class="pub-explore__label">{html.escape(c.title)}</span></a>'
                     for i, c in enumerate(site.categories[:8])
@@ -610,7 +625,7 @@ def render_homepage(site: SiteData) -> str:
             spec = ''.join(card_featured(a, i) for i, a in enumerate(arts[12:15]))
             extra += f'<div class="pub-container"><div class="pub-special"><h2 class="pub-section__title">Special Features</h2><div class="pub-special__grid">{spec}</div></div></div>'
         if idx == 4:
-            tags = ''.join(f'<a href="{html.escape(c.path)}" class="pub-tag">{html.escape(c.title)}</a>' for c in (site.categories or [])[:12])
+            tags = ''.join(f'<a href="{html.escape(u(c.path))}" class="pub-tag">{html.escape(c.title)}</a>' for c in (site.categories or [])[:12])
             extra += f'<section class="pub-section pub-section--alt"><div class="pub-container"><h2 class="pub-section__title">Trending Topics</h2><div class="pub-tags">{tags}</div></div></section>'
         rails += extra
         extra = ''
@@ -619,16 +634,16 @@ def render_homepage(site: SiteData) -> str:
     editors = ''.join(card_featured(a, i) for i, a in enumerate(arts[15:18]))
     ranked_l = ''.join(
         f'<div class="pub-ranked__item"><span class="pub-ranked__num">{i+1}</span>'
-        f'<a href="{html.escape(a.path)}" class="pub-ranked__title">{html.escape(a.title)}</a></div>'
+        f'<a href="{html.escape(u(a.path))}" class="pub-ranked__title">{html.escape(a.title)}</a></div>'
         for i, a in enumerate(arts[18:28])
     )
     ranked_r = ''.join(
         f'<div class="pub-ranked__item"><span class="pub-ranked__num">{i+1}</span>'
-        f'<a href="{html.escape(a.path)}" class="pub-ranked__title">{html.escape(a.title)}</a></div>'
+        f'<a href="{html.escape(u(a.path))}" class="pub-ranked__title">{html.escape(a.title)}</a></div>'
         for i, a in enumerate(arts[28:38])
     )
     experts = ''.join(
-        f'<div class="pub-expert"><img src="/assets/expert-{i+1}.jpg" alt=""><div class="pub-expert__name">Dr. {["Sarah Chen","James Okonkwo","Maria Santos","David Kim"][i]}</div>'
+        f'<div class="pub-expert"><img src="{u(f"/assets/expert-{i+1}.jpg")}" alt=""><div class="pub-expert__name">Dr. {["Sarah Chen","James Okonkwo","Maria Santos","David Kim"][i]}</div>'
         f'<div class="pub-expert__cred">{["Board-Certified Dermatologist","Clinical Researcher","PharmD, Skincare Specialist","MD, Cosmetic Dermatology"][i]}</div></div>'
         for i in range(4)
     )
@@ -665,12 +680,12 @@ def render_category_hub(site: SiteData, cat: Category, articles: list[Article]) 
         rev = ' pub-rail--reverse' if i % 2 else ''
         sections += f'<section class="pub-hub-section{rev}" id="section-{slugify(key)}"><h2 class="pub-section__title">{html.escape(key.replace("-", " ").title())}</h2>{rail_spotlight(group[:6], i%2==1)}{rail_mosaic(group[6:12])}</section>'
 
-    popular = ''.join(f'<a href="{html.escape(a.path)}">{html.escape(a.title)}</a>' for a in articles[:8])
+    popular = ''.join(f'<a href="{html.escape(u(a.path))}">{html.escape(a.title)}</a>' for a in articles[:8])
     return (
         head_block(f'{cat.title} | {site.name}', f'Expert guides on {cat.title.lower()}.')
         + shell_header(site, cat.path)
         + f"""<div class="pub-container pub-hub-hero">
-      <nav class="pub-breadcrumb"><a href="/">Home</a><span>/</span><span>{html.escape(cat.title)}</span></nav>
+      <nav class="pub-breadcrumb"><a href="{u('/')}">Home</a><span>/</span><span>{html.escape(cat.title)}</span></nav>
       <h1>{html.escape(cat.title)}</h1>
       <p class="pub-hub-hero__desc">{html.escape(cat.meta or site.tagline)}</p>
       <div class="pub-topic-pills">{pills}</div>
@@ -688,7 +703,7 @@ def render_category_hub(site: SiteData, cat: Category, articles: list[Article]) 
 
 
 def render_article(site: SiteData, article: Article, body: str, toc: list[tuple[str, str]], crumbs: list, related: list) -> str:
-    crumb_html = '<a href="/">Home</a>'
+    crumb_html = f'<a href="{u("/")}">Home</a>'
     seen_crumbs: set[tuple[str, str]] = {('home', '/')}
     for lbl, href in crumbs:
         key = (lbl.lower().strip(), href or '')
@@ -696,7 +711,7 @@ def render_article(site: SiteData, article: Article, body: str, toc: list[tuple[
             continue
         seen_crumbs.add(key)
         if href and href != '/':
-            crumb_html += f'<span>/</span><a href="{html.escape(href)}">{html.escape(lbl)}</a>'
+            crumb_html += f'<span>/</span><a href="{html.escape(u(href))}">{html.escape(lbl)}</a>'
         elif not href:
             crumb_html += f'<span>/</span><span>{html.escape(lbl)}</span>'
 
@@ -714,7 +729,7 @@ def render_article(site: SiteData, article: Article, body: str, toc: list[tuple[
         <li>Medically reviewed guidance for informed skincare decisions.</li></ul></div>"""
 
     rel_html = ''.join(
-        card_featured(Article(t, '', h, 'Related', image=img or ''), i)
+        card_featured(Article(t, '', u(h), 'Related', image=img or ''), i)
         for i, (t, h, img) in enumerate(related[:3])
     )
 
@@ -746,7 +761,7 @@ def render_article(site: SiteData, article: Article, body: str, toc: list[tuple[
         </div>
         <div class="pub-article-body pub-prose">{body}</div>
         <div class="pub-author-bio">
-          <img src="/assets/author.jpg" alt="">
+          <img src="{u('/assets/author.jpg')}" alt="">
           <div><strong>{html.escape(site.name)} Editorial</strong>
           <p style="margin:8px 0 0;font-size:0.9375rem;color:var(--pub-muted)">Our team works with board-certified dermatologists to deliver evidence-based skincare guidance.</p></div>
         </div>
@@ -755,7 +770,7 @@ def render_article(site: SiteData, article: Article, body: str, toc: list[tuple[
       <aside class="pub-sidebar pub-sidebar--sticky">
         <div class="pub-sidebar-card"><h4>On this page</h4><nav class="pub-toc-vertical">{toc_html}</nav></div>
         <div class="pub-sidebar-card"><h4>Popular</h4>
-          {''.join(f'<a href="{html.escape(a.path)}">{html.escape(a.title[:60])}</a>' for a in site.articles[:5])}
+          {''.join(f'<a href="{html.escape(u(a.path))}">{html.escape(a.title[:60])}</a>' for a in site.articles[:5])}
         </div>
         <div class="pub-sidebar-card"><h4>Newsletter</h4>
           <button class="pub-btn pub-btn--primary" type="button" style="width:100%">Subscribe</button>
@@ -826,7 +841,9 @@ def ensure_theme_assets() -> list[Path]:
     return sorted(shared.glob('*.jpg'))
 
 
-def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False) -> None:
+def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: str = '') -> None:
+    global BASE_URL
+    BASE_URL = (base_url or '').rstrip('/')
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
@@ -910,12 +927,17 @@ def main() -> None:
         action='store_true',
         help='Try downloading images from WordPress (dermat.local). Requires local WP running.',
     )
+    ap.add_argument(
+        '--base-url',
+        default='',
+        help='URL prefix for hosting (e.g. /nexus-site-builder for GitHub project Pages)',
+    )
     args = ap.parse_args()
     raw = args.site.resolve()
     if not raw.is_dir():
         raise SystemExit(f'Not a directory: {raw}')
     out = args.out or raw.parent / f'{raw.name}-pub'
-    build(raw, out.resolve(), fetch_remote=args.fetch_images)
+    build(raw, out.resolve(), fetch_remote=args.fetch_images, base_url=args.base_url)
 
 
 if __name__ == '__main__':

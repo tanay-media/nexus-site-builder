@@ -31,6 +31,13 @@ Add `--fetch-images` if WordPress media is reachable at `dermat.local`.
 
 ## GitHub Pages
 
-Push to `main` — the included workflow deploys `0e2dba5e-b89a-4f6a-81be-1cc735c629c9-pub` automatically.
+**Live site (homepage):** https://tanay-media.github.io/nexus-site-builder/
 
-After the first deploy: **Settings → Pages** → confirm source is **GitHub Actions**.
+Push to `main` — workflow deploys the themed build. In repo **Settings → Pages**, set source to **GitHub Actions** (not “Deploy from branch”).
+
+Rebuild for GitHub with correct asset paths:
+
+```bash
+cd trail-5
+python3 build_pages.py --site ../0e2dba5e-b89a-4f6a-81be-1cc735c629c9 --base-url /nexus-site-builder
+```
