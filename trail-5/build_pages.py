@@ -1,0 +1,922 @@
+#!/usr/bin/env python3
+"""
+HEA-001 Trail 5 — Transform Archetype static exports into publisher theme.
+
+Usage:
+  python3 build_pages.py --site ../0e2dba5e-b89a-4f6a-81be-1cc735c629c9
+  python3 build_pages.py --site /path/to/raw-site --out /path/to/output
+
+Copies trail-5/pub.css, pub.js, and shared/assets into output.
+Works on any Archetype export folder (arch-* / archetype-* classes).
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import html
+import re
+import shutil
+import unicodedata
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+TRAIL_DIR = Path(__file__).resolve().parent
+ASSET_IMAGES = [
+    "hero-wellness.jpg", "home-featured.jpg", "beauty-face.jpg", "skincare-products.jpg",
+    "moisturizer.jpg", "body-care.jpg", "body-exfoliation.jpg", "lab-science.jpg",
+    "author.jpg", "reviewer.jpg", "expert-1.jpg", "expert-2.jpg", "expert-3.jpg", "expert-4.jpg",
+]
+
+CLASS_MAP = [
+    (r'\barch-stat-strip\b', 'pub-stats'),
+    (r'\barch-stat\b', 'pub-stat'),
+    (r'\barch-stat-number\b', 'pub-stat__num'),
+    (r'\barch-stat-label\b', 'pub-stat__label'),
+    (r'\barch-steps\b', 'pub-steps'),
+    (r'\barch-step\b', 'pub-step'),
+    (r'\barch-step-num\b', 'pub-step__num'),
+    (r'\barch-pull-quote\b', 'pub-pullquote'),
+    (r'\barch-key-box\b', 'pub-key-box'),
+    (r'\barch-key-title\b', 'pub-key-box__title'),
+    (r'\bfaq-section\b', 'pub-faq-section'),
+    (r'\bfaq-item\b', 'pub-faq-block'),
+    (r'\barchetype-disclaimer\b', 'pub-disclaimer'),
+]
+
+KICKER_MAP = {
+    'guide': 'Guide', 'roundup': 'Roundup', 'comparison': 'Comparison',
+    'entity_profile': 'Analysis', 'analysis': 'Analysis', 'review': 'Review',
+    'research': 'Research',
+}
+
+CAT_LABELS = {
+    'skin-conditions': 'Skin Conditions',
+    'skincare-products': 'Skincare Products',
+    'active-ingredients': 'Active Ingredients',
+    'skincare-routines': 'Skincare Routines',
+    'skin-types-concerns': 'Skin Types & Concerns',
+    'body-care': 'Body Care',
+    'treatments-procedures': 'Treatments & Procedures',
+    'skincare-brands': 'Skincare Brands',
+}
+
+
+@dataclass
+class Article:
+    title: str
+    desc: str
+    path: str
+    kicker: str = 'Guide'
+    time: str = '6 min read'
+    author: str = 'Editorial Team'
+    cat: str = 'skin-care'
+    image: str = ''
+    badge: str = ''
+
+
+@dataclass
+class Category:
+    title: str
+    path: str
+    meta: str = ''
+    image: str = ''
+
+
+class ImageRegistry:
+    """Map remote Archetype/WP image URLs to local /assets/media/ paths."""
+
+    def __init__(
+        self, media_dir: Path, placeholders: list[Path], fetch_remote: bool = False,
+    ) -> None:
+        self.media_dir = media_dir
+        self.placeholders = placeholders or []
+        self.fetch_remote = fetch_remote
+        self._map: dict[str, str] = {}
+        self.media_dir.mkdir(parents=True, exist_ok=True)
+
+    def ingest_html(self, text: str) -> None:
+        for url in re.findall(r'\bsrc=["\']([^"\']+)["\']', text, re.I):
+            self.resolve(url)
+        for url in re.findall(r"url\(['\"]?([^'\")]+)['\"]?\)", text, re.I):
+            self.resolve(url.strip())
+
+    def resolve(self, url: str) -> str:
+        url = (url or '').strip()
+        if not url or url.startswith('data:'):
+            return ''
+        if url in self._map:
+            return self._map[url]
+        if url.startswith('/assets/'):
+            self._map[url] = url
+            return url
+        local = self._materialize(url)
+        self._map[url] = local
+        return local
+
+    def _materialize(self, url: str) -> str:
+        parsed = url.split('?')[0]
+        ext = Path(parsed).suffix.lower()
+        if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
+            ext = '.jpg'
+        name = hashlib.md5(url.encode()).hexdigest()[:14] + ext
+        dest = self.media_dir / name
+        if not dest.exists():
+            fetched = self._try_download(url, dest) if self.fetch_remote else False
+            if not fetched:
+                self._copy_placeholder(dest)
+        return f'/assets/media/{name}'
+
+    def _try_download(self, url: str, dest: Path) -> bool:
+        candidates = [url]
+        if 'dermat.local' in url:
+            candidates.append(url.replace('http://dermat.local', 'http://127.0.0.1'))
+            candidates.append(url.replace('https://dermat.local', 'http://127.0.0.1'))
+        for candidate in candidates:
+            try:
+                req = urllib.request.Request(
+                    candidate,
+                    headers={'User-Agent': 'Trail5-Theme-Builder/1.0'},
+                )
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    dest.write_bytes(resp.read())
+                return True
+            except (urllib.error.URLError, OSError, TimeoutError):
+                continue
+        return False
+
+    def _copy_placeholder(self, dest: Path) -> None:
+        if self.placeholders:
+            src = self.placeholders[len(self._map) % len(self.placeholders)]
+            shutil.copy(src, dest)
+        else:
+            dest.write_bytes(
+                b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00'
+                b'\xff\xd9'
+            )
+
+
+@dataclass
+class SiteData:
+    name: str = 'Health'
+    tagline: str = 'Expert health guidance, reviewed by specialists'
+    nav: list[tuple[str, str]] = field(default_factory=list)
+    footer_cols: list[tuple[str, list[tuple[str, str]]]] = field(default_factory=list)
+    articles: list[Article] = field(default_factory=list)
+    categories: list[Category] = field(default_factory=list)
+
+
+def slugify(text: str) -> str:
+    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    text = re.sub(r'[^\w\s-]', '', text.lower())
+    return re.sub(r'[-\s]+', '-', text).strip('-')
+
+
+def re_sub(pattern: str, repl: str, s: str) -> str:
+    return re.sub(pattern, repl, s, flags=re.I | re.S)
+
+
+def extract(pattern: str, s: str, group: int = 1, default: str = '') -> str:
+    m = re.search(pattern, s, re.I | re.S)
+    return html.unescape(m.group(group).strip()) if m else default
+
+
+def transform_content(content: str, images: Optional[ImageRegistry] = None) -> str:
+    if images:
+        def _src(m: re.Match) -> str:
+            local = images.resolve(m.group(1))
+            return f'src="{local}"' if local else m.group(0)
+
+        content = re.sub(r'\bsrc=["\']([^"\']+)["\']', _src, content, flags=re.I)
+
+    content = re.sub(r'\sstyle="[^"]*"', '', content, flags=re.I)
+    content = re.sub(r"\sstyle='[^']*'", '', content, flags=re.I)
+    for old, new in CLASS_MAP:
+        content = re.sub(old, new, content)
+    content = re.sub(
+        r'<table\b',
+        r'<div class="pub-table-wrap"><table',
+        content,
+        flags=re.I,
+    )
+    content = re.sub(r'</table>', r'</table></div>', content, flags=re.I)
+
+    def add_h2_ids(m: re.Match) -> str:
+        tag, inner = m.group(1), m.group(2)
+        sid = slugify(re.sub(r'<[^>]+>', '', inner))
+        if not sid:
+            return m.group(0)
+        if 'id=' in tag:
+            return m.group(0)
+        return f'<h2 id="{sid}"{tag[3:]}>{inner}</h2>'
+
+    content = re.sub(r'<h2([^>]*)>(.*?)</h2>', add_h2_ids, content, flags=re.I | re.S)
+    content = re.sub(r'http://dermat\.local', '', content)
+    content = re.sub(r'https://dermat\.local', '', content)
+    return content
+
+
+def parse_nav(html_text: str) -> list[tuple[str, str]]:
+    links = re.findall(
+        r'<a[^>]+class="[^"]*arch-nav-link[^"]*"[^>]+href="([^"]+)"[^>]*>([^<]+)</a>',
+        html_text,
+    )
+    if not links:
+        links = re.findall(r'<a[^>]+href="(/[^"]+)"[^>]*class="[^"]*arch-nav-link', html_text)
+        links = [(h, '') for h in links]
+    return [(lbl.strip() or h.strip('/').replace('-', ' ').title(), h) for h, lbl in links if lbl or h]
+
+
+def parse_footer(html_text: str) -> list[tuple[str, list[tuple[str, str]]]]:
+    cols = []
+    for col in re.finditer(
+        r'<div class="arch-footer-col">.*?<h4>([^<]+)</h4>(.*?)</div>',
+        html_text,
+        re.S,
+    ):
+        title = col.group(1).strip()
+        links = re.findall(r'<a href="([^"]+)">([^<]+)</a>', col.group(2))
+        cols.append((title, links))
+    return cols
+
+
+def parse_feed_cards(html_text: str, images: Optional[ImageRegistry] = None) -> list[Article]:
+    articles = []
+    for m in re.finditer(
+        r'<a href="([^"]+)" class="arc-feed-card">.*?'
+        r'(?:<img[^>]+src="([^"]*)"[^>]*>)?.*?'
+        r'class="arc-feed-type[^"]*">([^<]*)</div>.*?'
+        r'class="arc-feed-title">([^<]*)</div>.*?'
+        r'class="arc-feed-excerpt">([^<]*)</div>',
+        html_text,
+        re.S,
+    ):
+        path, img, badge, title, desc = m.groups()
+        kicker = badge_to_kicker(badge)
+        articles.append(Article(
+            title=html.unescape(title.strip()),
+            desc=html.unescape(desc.strip()),
+            path=path if path.startswith('/') else '/' + path,
+            kicker=kicker,
+            image=images.resolve(img or '') if images else (img or ''),
+            badge=badge.strip(),
+            cat=path.strip('/').split('/')[0] if path else 'general',
+        ))
+    return articles
+
+
+def badge_to_kicker(badge: str) -> str:
+    b = badge.lower().replace(' ', '_')
+    for key, label in KICKER_MAP.items():
+        if key in b:
+            return label
+    return 'Guide'
+
+
+def parse_categories(html_text: str, images: Optional[ImageRegistry] = None) -> list[Category]:
+    cats = []
+    for m in re.finditer(
+        r'<a href="([^"]+)" class="arc-cat-card"([^>]*)>.*?'
+        r'class="arc-cat-title">([^<]*)</div>.*?'
+        r'class="arc-cat-meta">\s*([^<]*)',
+        html_text,
+        re.S,
+    ):
+        path, attrs, title, meta = m.groups()
+        img = ''
+        bg = re.search(r"url\(['\"]?([^'\")]+)['\"]?\)", attrs or '', re.I)
+        if bg and images:
+            img = images.resolve(bg.group(1))
+        cats.append(Category(
+            title=html.unescape(title.strip()),
+            path=path.rstrip('/') + '/' if path else '/',
+            meta=html.unescape(meta.strip()),
+            image=img,
+        ))
+    return cats
+
+
+def parse_article_page(
+    path: Path, html_text: str, rel_url: str, images: Optional[ImageRegistry] = None,
+) -> Optional[Article]:
+    if 'single-post' not in html_text and 'arch-article-body' not in html_text:
+        if 'archetype-main' not in html_text:
+            return None
+    title = extract(r'<h1[^>]*class="[^"]*archetype-entry-headline[^"]*"[^>]*>([^<]+)</h1>', html_text)
+    if not title:
+        title = extract(r'<title>([^|<]+)', html_text)
+    desc = extract(r'<meta name="description" content="([^"]*)"', html_text)
+    badge = extract(r'class="arch-content-type-badge[^"]*">\s*([^<]+)', html_text)
+    read = extract(r'class="arch-read-time">([^<]+)</div>', html_text)
+    body = extract(r'<div class="archetype-content arch-article-body">(.*)</div>\s*<!-- Prev', html_text)
+    if not body:
+        body = extract(r'<div class="archetype-content arch-article-body">(.*)</div>\s*<div class="arch-article-nav"', html_text)
+    img_m = re.search(
+        r'class="[^"]*arch-article[^"]*"[^>]*>.*?<img[^>]+src="([^"]+)"'
+        r'|<img[^>]+class="[^"]*arch-article[^"]*"[^>]+src="([^"]+)"'
+        r'|<div class="archetype-content[^"]*"[^>]*>[\s\S]*?<img[^>]+src="([^"]+)"',
+        html_text,
+        re.I | re.S,
+    )
+    hero_img = ''
+    if img_m:
+        hero_img = next(g for g in img_m.groups() if g) or ''
+    if not hero_img:
+        hub = re.search(r'class="arch-hub-article-img"[^>]+src="([^"]+)"', html_text)
+        feed = re.search(r'class="arc-feed-img"[^>]+src="([^"]+)"', html_text)
+        hero_img = (hub or feed).group(1) if (hub or feed) else ''
+    resolved = images.resolve(hero_img) if images and hero_img else hero_img
+    return Article(
+        title=title,
+        desc=desc or (body[:160] + '...' if body else ''),
+        path=rel_url,
+        kicker=badge_to_kicker(badge),
+        time=read or '7 min read',
+        badge=badge.strip(),
+        cat=rel_url.strip('/').split('/')[0] if rel_url else 'general',
+        image=resolved,
+    )
+
+
+def extract_article_body(html_text: str, images: Optional[ImageRegistry] = None) -> str:
+    body = extract(r'<div class="archetype-content arch-article-body">(.*)</div>\s*<!-- Prev', html_text)
+    if not body:
+        body = extract(r'<div class="archetype-content arch-article-body">(.*)</div>\s*<div class="arch-article-nav"', html_text)
+    return transform_content(body, images) if body else ''
+
+
+def extract_toc(html_text: str) -> list[tuple[str, str]]:
+    items = re.findall(
+        r'<a class="arch-toc-link" href="#([^"]+)">([^<]+)</a>',
+        html_text,
+    )
+    return items
+
+
+def extract_breadcrumb(html_text: str) -> list[tuple[str, str]]:
+    crumbs = []
+    for m in re.finditer(r'<nav class="archetype-breadcrumb"[^>]*>(.*?)</nav>', html_text, re.S):
+        block = m.group(1)
+        for a in re.finditer(r'<a href="([^"]+)">([^<]+)</a>', block):
+            crumbs.append((html.unescape(a.group(2).strip()), a.group(1)))
+        last = re.search(r'<span>([^<]+)</span>\s*$', block.strip(), re.S)
+        if last:
+            crumbs.append((html.unescape(last.group(1).strip()), ''))
+    return crumbs
+
+
+def extract_related(html_text: str, images: Optional[ImageRegistry] = None) -> list[tuple[str, str, str]]:
+    items = []
+    for m in re.finditer(
+        r'<div class="archetype-related-item">(.*?</div>)\s*</div>',
+        html_text,
+        re.S,
+    ):
+        block = m.group(1)
+        link = re.search(r'<a class="archetype-related-title" href="([^"]+)">([^<]+)</a>', block)
+        thumb = re.search(r'<img[^>]+src="([^"]+)"', block)
+        if link:
+            img = images.resolve(thumb.group(1)) if images and thumb else (thumb.group(1) if thumb else '')
+            items.append((link.group(2).strip(), link.group(1), img))
+    return items[:6]
+
+
+def img_for_index(i: int, article_img: str = '') -> str:
+    if article_img and article_img.startswith('/assets/'):
+        return article_img
+    return f'/assets/{ASSET_IMAGES[i % len(ASSET_IMAGES)]}'
+
+
+def head_block(title: str, desc: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{html.escape(title)}</title>
+  <meta name="description" content="{html.escape(desc)}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="/assets/pub.css">
+</head>"""
+
+
+def shell_header(site: SiteData, active: str = '') -> str:
+    nav_links = ''.join(
+        f'<a class="pub-nav__link{" is-active" if active and h == active else ""}" href="{html.escape(h)}">{html.escape(lbl)}</a>'
+        for lbl, h in site.nav[:8]
+    )
+    return f"""
+<body class="pub-site">
+<div class="pub-progress" id="pub-progress"></div>
+<div class="pub-trust-bar pub-container">100+ Medical Experts · Fact-Checked Content · Updated {datetime.now().strftime("%B %Y")}</div>
+<header class="pub-header">
+  <div class="pub-container">
+    <div class="pub-header__top">
+      <a class="pub-logo" href="/">{html.escape(site.name.lower())}</a>
+      <div class="pub-header__actions">
+        <input type="search" class="pub-search" placeholder="Search topics…" aria-label="Search">
+        <button class="pub-btn pub-btn--primary" type="button">Subscribe</button>
+        <button class="pub-nav-toggle" type="button" data-pub-nav-toggle aria-expanded="false" aria-label="Menu">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+    <nav class="pub-nav" aria-label="Main">
+      <div class="pub-nav__inner">{nav_links}</div>
+    </nav>
+  </div>
+</header>"""
+
+
+def shell_footer(site: SiteData) -> str:
+    cols = ''
+    for title, links in site.footer_cols[:3]:
+        links_html = ''.join(f'<a href="{html.escape(h)}">{html.escape(lbl)}</a>' for lbl, h in links[:6])
+        cols += f'<div class="pub-footer__col"><h4>{html.escape(title)}</h4>{links_html}</div>'
+    return f"""
+<footer class="pub-footer">
+  <div class="pub-container pub-footer__grid">
+    <div class="pub-footer__brand">
+      <span class="pub-logo">{html.escape(site.name.lower())}</span>
+      <p class="pub-footer__tagline">{html.escape(site.tagline)}</p>
+    </div>
+    {cols}
+  </div>
+  <div class="pub-container pub-footer__bar">© {datetime.now().year} {html.escape(site.name)}. All rights reserved. For informational purposes only.</div>
+</footer>
+<script src="/assets/pub.js"></script>
+<script>
+(function(){{
+  var p=document.getElementById('pub-progress');
+  if(!p)return;
+  window.addEventListener('scroll',function(){{
+    var h=document.documentElement.scrollHeight-window.innerHeight;
+    p.style.width=(h>0?(window.scrollY/h)*100:0)+'%';
+  }},{{passive:true}});
+}})();
+</script>
+</body></html>"""
+
+
+def trending_strip(articles: list[Article]) -> str:
+    links = ''.join(
+        f'<a href="{html.escape(a.path)}">{html.escape(a.title)}</a>'
+        for a in articles[:8]
+    )
+    return f"""
+<section class="pub-trending"><div class="pub-container pub-trending__inner">
+  <span class="pub-pill">Trending Now</span>
+  <div class="pub-trending__track">{links}</div>
+</div></section>"""
+
+
+def card_featured(a: Article, i: int) -> str:
+    img = img_for_index(i, a.image)
+    return f"""<a href="{html.escape(a.path)}" class="pub-card pub-card--featured">
+  <img class="pub-card__img" src="{html.escape(img)}" alt="" loading="lazy">
+  <div class="pub-card__body">
+    <span class="pub-card__kicker">{html.escape(a.kicker)}</span>
+    <h3 class="pub-card__title">{html.escape(a.title)}</h3>
+    <p class="pub-card__desc">{html.escape(a.desc[:140])}</p>
+    <div class="pub-card__meta">{html.escape(a.time)} · {html.escape(a.author)}</div>
+  </div>
+</a>"""
+
+
+def card_compact(a: Article, i: int) -> str:
+    img = img_for_index(i + 3, a.image)
+    return f"""<a href="{html.escape(a.path)}" class="pub-card pub-card--compact">
+  <img class="pub-card__img" src="{html.escape(img)}" alt="" loading="lazy">
+  <div><span class="pub-card__kicker">{html.escape(a.kicker)}</span>
+  <h4 class="pub-card__title">{html.escape(a.title)}</h4></div>
+</a>"""
+
+
+def card_tile(a: Article, i: int) -> str:
+    img = img_for_index(i, a.image)
+    return f"""<a href="{html.escape(a.path)}" class="pub-card pub-card--tile">
+  <img class="pub-card__img" src="{html.escape(img)}" alt="" loading="lazy">
+  <div class="pub-card__body"><h4 class="pub-card__title">{html.escape(a.title)}</h4></div>
+</a>"""
+
+
+def rail_spotlight(articles: list[Article], reverse: bool = False) -> str:
+    if not articles:
+        return ''
+    rev = ' pub-rail--reverse' if reverse else ''
+    featured = articles[0]
+    rest = articles[1:5]
+    list_html = ''.join(card_compact(a, i) for i, a in enumerate(rest))
+    return f"""<div class="pub-rail pub-rail--spotlight{rev}">
+  <div class="pub-rail__featured">{card_featured(featured, 0)}</div>
+  <div class="pub-rail__list">{list_html}</div>
+</div>"""
+
+
+def rail_mosaic(articles: list[Article]) -> str:
+    tiles = ''.join(card_tile(a, i) for i, a in enumerate(articles[:10]))
+    return f'<div class="pub-rail pub-rail--mosaic"><div class="pub-tile-grid">{tiles}</div></div>'
+
+
+def rail_digest(articles: list[Article]) -> str:
+    feat = ''.join(card_featured(a, i) for i, a in enumerate(articles[:2]))
+    headlines = ''.join(
+        f'<a href="{html.escape(a.path)}" class="pub-card pub-card--headline"><div class="pub-card__body">'
+        f'<span class="pub-card__kicker">{html.escape(a.kicker)}</span>'
+        f'<h4 class="pub-card__title">{html.escape(a.title)}</h4></div></a>'
+        for a in articles[2:5]
+    )
+    return f"""<div class="pub-rail pub-rail--digest">
+  <div class="pub-digest__featured">{feat}</div>
+  <div class="pub-digest__headlines">{headlines}</div>
+</div>"""
+
+
+def category_rail(section_title: str, articles: list[Article], idx: int, more_href: str) -> str:
+    variant = idx % 4
+    if variant == 0:
+        body = rail_spotlight(articles)
+    elif variant == 1:
+        body = rail_mosaic(articles)
+    elif variant == 2:
+        body = rail_digest(articles)
+    else:
+        body = rail_spotlight(articles, reverse=True)
+    return f"""
+<section class="pub-section{" pub-section--alt" if idx % 2 else ""}" id="cat-{slugify(section_title)}">
+  <div class="pub-container">
+    <div class="pub-section__header">
+      <h2 class="pub-section__title">{html.escape(section_title)}</h2>
+      <a class="pub-section__more" href="{html.escape(more_href)}">View all →</a>
+    </div>
+    {body}
+  </div>
+</section>"""
+
+
+def render_homepage(site: SiteData) -> str:
+    arts = site.articles
+    if len(arts) < 12:
+        arts = arts + arts  # cycle
+    lead = arts[0]
+    side = arts[1:5]
+    hero = f"""
+<section class="pub-hero"><div class="pub-container pub-hero__grid">
+  <a href="{html.escape(lead.path)}" class="pub-hero__lead">
+    <img src="{html.escape(img_for_index(0, lead.image))}" alt="">
+    <div class="pub-hero__lead-overlay">
+      <div class="pub-hero__kicker">{html.escape(lead.kicker)}</div>
+      <h2>{html.escape(lead.title)}</h2>
+      <p>{html.escape(lead.desc[:120])}</p>
+    </div>
+  </a>
+  <div class="pub-hero__side">{''.join(card_tile(a, i+1) for i, a in enumerate(side))}</div>
+</div></section>"""
+
+    quick = ''.join(
+        f'<a href="{html.escape(a.path)}" class="pub-quick-hit"><div class="pub-quick-hit__kicker">{html.escape(a.kicker)}</div>'
+        f'<div class="pub-quick-hit__title">{html.escape(a.title[:50])}</div></a>'
+        for a in arts[5:11]
+    )
+
+    rails = ''
+    cat_groups: dict[str, list[Article]] = {}
+    for a in arts:
+        cat_groups.setdefault(a.cat, []).append(a)
+    if not cat_groups:
+        cat_groups = {'skin-care': arts}
+
+    idx = 0
+    extra = ''
+    for cat_slug, group in list(cat_groups.items())[:6]:
+        label = CAT_LABELS.get(cat_slug, cat_slug.replace('-', ' ').title())
+        hub = f'/{cat_slug}/' if cat_slug else '/'
+        rails += category_rail(label, group[:8], idx, hub)
+        if idx == 1:
+            explore = site.categories or [Category(c.title, c.path) for c in []]
+            if site.categories:
+                cards = ''.join(
+                    f'<a href="{html.escape(c.path)}" class="pub-explore__card">'
+                    f'<img src="{html.escape(c.image or img_for_index(i))}" alt="">'
+                    f'<span class="pub-explore__label">{html.escape(c.title)}</span></a>'
+                    for i, c in enumerate(site.categories[:8])
+                )
+                extra += f'<section class="pub-section"><div class="pub-container"><h2 class="pub-section__title">Explore Topics</h2>'
+                extra += f'<div class="pub-explore__track">{cards}</div></div></section>'
+        if idx == 3:
+            spec = ''.join(card_featured(a, i) for i, a in enumerate(arts[12:15]))
+            extra += f'<div class="pub-container"><div class="pub-special"><h2 class="pub-section__title">Special Features</h2><div class="pub-special__grid">{spec}</div></div></div>'
+        if idx == 4:
+            tags = ''.join(f'<a href="{html.escape(c.path)}" class="pub-tag">{html.escape(c.title)}</a>' for c in (site.categories or [])[:12])
+            extra += f'<section class="pub-section pub-section--alt"><div class="pub-container"><h2 class="pub-section__title">Trending Topics</h2><div class="pub-tags">{tags}</div></div></section>'
+        rails += extra
+        extra = ''
+        idx += 1
+
+    editors = ''.join(card_featured(a, i) for i, a in enumerate(arts[15:18]))
+    ranked_l = ''.join(
+        f'<div class="pub-ranked__item"><span class="pub-ranked__num">{i+1}</span>'
+        f'<a href="{html.escape(a.path)}" class="pub-ranked__title">{html.escape(a.title)}</a></div>'
+        for i, a in enumerate(arts[18:28])
+    )
+    ranked_r = ''.join(
+        f'<div class="pub-ranked__item"><span class="pub-ranked__num">{i+1}</span>'
+        f'<a href="{html.escape(a.path)}" class="pub-ranked__title">{html.escape(a.title)}</a></div>'
+        for i, a in enumerate(arts[28:38])
+    )
+    experts = ''.join(
+        f'<div class="pub-expert"><img src="/assets/expert-{i+1}.jpg" alt=""><div class="pub-expert__name">Dr. {["Sarah Chen","James Okonkwo","Maria Santos","David Kim"][i]}</div>'
+        f'<div class="pub-expert__cred">{["Board-Certified Dermatologist","Clinical Researcher","PharmD, Skincare Specialist","MD, Cosmetic Dermatology"][i]}</div></div>'
+        for i in range(4)
+    )
+
+    return (
+        head_block(f'{site.name} — Health & Wellness', site.tagline)
+        + shell_header(site, '/')
+        + trending_strip(arts)
+        + hero
+        + f'<section class="pub-quick-hits"><div class="pub-container pub-quick-hits__grid">{quick}</div></section>'
+        + rails
+        + f'<section class="pub-container"><div class="pub-editors"><h2 class="pub-section__title">Editor\'s Picks</h2><div class="pub-editors__grid">{editors}</div></div></section>'
+        + f'<section class="pub-section"><div class="pub-container pub-ranked"><div class="pub-ranked__col"><h3>Most Read</h3>{ranked_l}</div><div class="pub-ranked__col"><h3>Latest</h3>{ranked_r}</div></div></section>'
+        + f'<section class="pub-section pub-section--alt"><div class="pub-container"><h2 class="pub-section__title">Medical Review Board</h2><div class="pub-experts">{experts}</div></div></section>'
+        + f"""<section class="pub-container"><div class="pub-newsletter">
+      <h2>Stay informed</h2><p>Weekly dermatology tips, reviewed by experts.</p>
+      <form class="pub-newsletter__form" onsubmit="return false">
+        <input type="email" placeholder="Your email" aria-label="Email">
+        <button class="pub-btn pub-btn--primary" type="submit">Subscribe</button>
+      </form></div></section>"""
+        + shell_footer(site)
+    )
+
+
+def render_category_hub(site: SiteData, cat: Category, articles: list[Article]) -> str:
+    pills = ''.join(f'<a href="#section-{slugify(c.title)}" class="pub-topic-pill">{html.escape(c.title)}</a>' for c in site.categories[:10])
+    sections = ''
+    groups: dict[str, list[Article]] = {}
+    for a in articles:
+        sub = a.path.strip('/').split('/')
+        key = sub[1] if len(sub) > 1 else 'featured'
+        groups.setdefault(key, []).append(a)
+    for i, (key, group) in enumerate(groups.items()):
+        rev = ' pub-rail--reverse' if i % 2 else ''
+        sections += f'<section class="pub-hub-section{rev}" id="section-{slugify(key)}"><h2 class="pub-section__title">{html.escape(key.replace("-", " ").title())}</h2>{rail_spotlight(group[:6], i%2==1)}{rail_mosaic(group[6:12])}</section>'
+
+    popular = ''.join(f'<a href="{html.escape(a.path)}">{html.escape(a.title)}</a>' for a in articles[:8])
+    return (
+        head_block(f'{cat.title} | {site.name}', f'Expert guides on {cat.title.lower()}.')
+        + shell_header(site, cat.path)
+        + f"""<div class="pub-container pub-hub-hero">
+      <nav class="pub-breadcrumb"><a href="/">Home</a><span>/</span><span>{html.escape(cat.title)}</span></nav>
+      <h1>{html.escape(cat.title)}</h1>
+      <p class="pub-hub-hero__desc">{html.escape(cat.meta or site.tagline)}</p>
+      <div class="pub-topic-pills">{pills}</div>
+    </div>
+    <div class="pub-container pub-hub-layout">
+      <main>{sections or rail_spotlight(articles[:6])}</main>
+      <aside class="pub-sidebar pub-sidebar--sticky">
+        <div class="pub-sidebar-card"><h4>Popular in {html.escape(cat.title)}</h4>{popular}</div>
+        <div class="pub-sidebar-card"><h4>Newsletter</h4><p style="font-size:0.875rem;color:var(--pub-muted)">Get weekly tips.</p>
+        <button class="pub-btn pub-btn--primary" type="button" style="width:100%;margin-top:12px">Subscribe</button></div>
+      </aside>
+    </div>"""
+        + shell_footer(site)
+    )
+
+
+def render_article(site: SiteData, article: Article, body: str, toc: list[tuple[str, str]], crumbs: list, related: list) -> str:
+    crumb_html = '<a href="/">Home</a>'
+    seen_crumbs: set[tuple[str, str]] = {('home', '/')}
+    for lbl, href in crumbs:
+        key = (lbl.lower().strip(), href or '')
+        if key in seen_crumbs:
+            continue
+        seen_crumbs.add(key)
+        if href and href != '/':
+            crumb_html += f'<span>/</span><a href="{html.escape(href)}">{html.escape(lbl)}</a>'
+        elif not href:
+            crumb_html += f'<span>/</span><span>{html.escape(lbl)}</span>'
+
+    toc_html = ''.join(
+        f'<a href="#{html.escape(sid)}">{html.escape(lbl)}</a>' for sid, lbl in toc
+    )
+    if not toc_html:
+        for m in re.finditer(r'<h2 id="([^"]+)">([^<]+)</h2>', body):
+            toc_html += f'<a href="#{m.group(1)}">{html.escape(m.group(2))}</a>'
+
+    takeaways = ''
+    first_p = extract(r'<p>([^<]{40,200})</p>', body)
+    if first_p:
+        takeaways = f"""<div class="pub-takeaways"><h3>Key Takeaways</h3><ul><li>{html.escape(first_p[:120])}…</li>
+        <li>Medically reviewed guidance for informed skincare decisions.</li></ul></div>"""
+
+    rel_html = ''.join(
+        card_featured(Article(t, '', h, 'Related', image=img or ''), i)
+        for i, (t, h, img) in enumerate(related[:3])
+    )
+
+    return (
+        head_block(f'{article.title} | {site.name}', article.desc)
+        + shell_header(site)
+        + f"""<div class="pub-container pub-article-wrap">
+      <article class="pub-article-main">
+        <nav class="pub-breadcrumb">{crumb_html}</nav>
+        <header class="pub-article-header">
+          <span class="pub-card__kicker">{html.escape(article.kicker)}</span>
+          <h1>{html.escape(article.title)}</h1>
+          <div class="pub-article-meta">
+            <span>{html.escape(article.time)}</span>
+            <span>·</span>
+            <span>{html.escape(article.author)}</span>
+            <span>·</span>
+            <span>Updated {datetime.now().strftime("%b %Y")}</span>
+          </div>
+          <div class="pub-badges">
+            <span class="pub-badge">Medically Reviewed</span>
+            <span class="pub-badge">Fact-checked</span>
+          </div>
+          {takeaways}
+        </header>
+        {f'<figure class="pub-article-hero"><img src="{html.escape(article.image)}" alt="{html.escape(article.title)}" loading="eager"></figure>' if article.image else ''}
+        <div class="pub-share">
+          <button type="button" data-pub-copy-link>Copy link</button>
+        </div>
+        <div class="pub-article-body pub-prose">{body}</div>
+        <div class="pub-author-bio">
+          <img src="/assets/author.jpg" alt="">
+          <div><strong>{html.escape(site.name)} Editorial</strong>
+          <p style="margin:8px 0 0;font-size:0.9375rem;color:var(--pub-muted)">Our team works with board-certified dermatologists to deliver evidence-based skincare guidance.</p></div>
+        </div>
+        <section class="pub-related"><h2>Related Reading</h2><div class="pub-related__grid">{rel_html}</div></section>
+      </article>
+      <aside class="pub-sidebar pub-sidebar--sticky">
+        <div class="pub-sidebar-card"><h4>On this page</h4><nav class="pub-toc-vertical">{toc_html}</nav></div>
+        <div class="pub-sidebar-card"><h4>Popular</h4>
+          {''.join(f'<a href="{html.escape(a.path)}">{html.escape(a.title[:60])}</a>' for a in site.articles[:5])}
+        </div>
+        <div class="pub-sidebar-card"><h4>Newsletter</h4>
+          <button class="pub-btn pub-btn--primary" type="button" style="width:100%">Subscribe</button>
+        </div>
+      </aside>
+    </div>"""
+        + shell_footer(site)
+    )
+
+
+def scan_site(raw_dir: Path, images: Optional[ImageRegistry] = None) -> SiteData:
+    site = SiteData()
+    seen_paths: set[str] = set()
+    article_bodies: dict[str, tuple[str, list, list, list]] = {}
+
+    html_files = sorted(raw_dir.rglob('index.html'))
+    home_html = ''
+    for fp in html_files:
+        parent_rel = fp.parent.relative_to(raw_dir)
+        if str(parent_rel) == '.':
+            rel = '/'
+        else:
+            rel = '/' + str(parent_rel).replace('\\', '/') + '/'
+
+        text = fp.read_text(encoding='utf-8', errors='replace')
+        if rel == '/' or 'arch-site home' in text:
+            home_html = text
+
+        if images:
+            images.ingest_html(text)
+
+        art = parse_article_page(fp, text, rel, images)
+        if art and rel not in seen_paths:
+            site.articles.append(art)
+            seen_paths.add(rel)
+            article_bodies[rel] = (
+                extract_article_body(text, images),
+                extract_toc(text),
+                extract_breadcrumb(text),
+                extract_related(text, images),
+            )
+
+    if home_html:
+        site.name = extract(r'class="arch-nav-brand"[^>]*>([^<]+)</a>', home_html) or extract(r'<title>([^|<]+)', home_html) or site.name
+        site.tagline = extract(r'class="arch-footer-tagline">([^<]+)</p>', home_html) or site.tagline
+        site.nav = parse_nav(home_html)
+        site.footer_cols = parse_footer(home_html)
+        site.categories = parse_categories(home_html, images)
+        for a in parse_feed_cards(home_html, images):
+            if a.path not in seen_paths:
+                site.articles.insert(0, a)
+                seen_paths.add(a.path)
+
+    # Dedupe articles by path
+    by_path: dict[str, Article] = {}
+    for a in site.articles:
+        by_path[a.path] = a
+    site.articles = list(by_path.values())
+    site._article_bodies = article_bodies  # type: ignore
+    return site
+
+
+def ensure_theme_assets() -> list[Path]:
+    shared = TRAIL_DIR / 'shared' / 'assets'
+    if not shared.exists() or len(list(shared.glob('*.jpg'))) < 5:
+        import generate_assets
+        generate_assets.main()
+    return sorted(shared.glob('*.jpg'))
+
+
+def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False) -> None:
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    assets_out = out_dir / 'assets'
+    assets_out.mkdir()
+    shutil.copy(TRAIL_DIR / 'pub.css', assets_out / 'pub.css')
+    shutil.copy(TRAIL_DIR / 'pub.js', assets_out / 'pub.js')
+    placeholders = ensure_theme_assets()
+    for f in placeholders:
+        shutil.copy(f, assets_out / f.name)
+
+    images = ImageRegistry(assets_out / 'media', placeholders, fetch_remote=fetch_remote)
+    for fp in raw_dir.rglob('index.html'):
+        images.ingest_html(fp.read_text(encoding='utf-8', errors='replace'))
+
+    site = scan_site(raw_dir, images)
+    bodies: dict = getattr(site, '_article_bodies', {})
+
+    # Homepage
+    (out_dir / 'index.html').write_text(render_homepage(site), encoding='utf-8')
+
+    # Category hubs
+    cat_articles: dict[str, list[Article]] = {}
+    for a in site.articles:
+        cat_articles.setdefault(a.cat, []).append(a)
+
+    for cat in site.categories:
+        slug = cat.path.strip('/').split('/')[0]
+        arts = cat_articles.get(slug, [x for x in site.articles if x.path.startswith(cat.path)][:20])
+        out_path = out_dir / cat.path.strip('/')
+        out_path.mkdir(parents=True, exist_ok=True)
+        (out_path / 'index.html').write_text(render_category_hub(site, cat, arts or site.articles[:12]), encoding='utf-8')
+
+    # Articles
+    for rel, art in {a.path: a for a in site.articles}.items():
+        body, toc, crumbs, related = bodies.get(rel, ('', [], [], []))
+        if not body:
+            continue
+        parts = rel.strip('/').split('/')
+        out_path = out_dir.joinpath(*parts)
+        out_path.mkdir(parents=True, exist_ok=True)
+        (out_path / 'index.html').write_text(
+            render_article(site, art, body, toc, crumbs, related),
+            encoding='utf-8',
+        )
+
+    # Policy / about pages — simple article shell
+    for fp in raw_dir.rglob('index.html'):
+        rel = '/' + str(fp.parent.relative_to(raw_dir)).replace('\\', '/')
+        if rel in ('/', '/.') or rel.endswith('//'):
+            continue
+        rel = rel if rel.endswith('/') else rel + '/'
+        if rel in bodies or any(rel.startswith(c.path) for c in site.categories):
+            continue
+        text = fp.read_text(encoding='utf-8', errors='replace')
+        if 'arch-article-body' not in text and 'archetype-main' not in text:
+            title = extract(r'<title>([^<]+)</title>', text) or 'Page'
+            main = extract(r'<div class="arch-page-wrapper">(.*)</div>\s*<div class="arch-footer', text)
+            if main:
+                art = Article(title=title.split('|')[0].strip(), desc='', path=rel)
+                parts = rel.strip('/').split('/')
+                if parts and parts != ['']:
+                    out_path = out_dir.joinpath(*parts)
+                    out_path.mkdir(parents=True, exist_ok=True)
+                    (out_path / 'index.html').write_text(
+                        render_article(site, art, transform_content(main, images), [], [('Home', '/')], []),
+                        encoding='utf-8',
+                    )
+
+    n_media = len(list((assets_out / 'media').glob('*')))
+    print(f'Built {len(list(out_dir.rglob("index.html")))} pages → {out_dir}')
+    print(f'  Theme placeholders: {len(placeholders)} · Cached images: {n_media}')
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description='Apply HEA-001 Trail 5 theme to Archetype site export')
+    ap.add_argument('--site', type=Path, required=True, help='Path to raw Archetype export folder')
+    ap.add_argument('--out', type=Path, help='Output directory (default: <site>-pub next to raw)')
+    ap.add_argument(
+        '--fetch-images',
+        action='store_true',
+        help='Try downloading images from WordPress (dermat.local). Requires local WP running.',
+    )
+    args = ap.parse_args()
+    raw = args.site.resolve()
+    if not raw.is_dir():
+        raise SystemExit(f'Not a directory: {raw}')
+    out = args.out or raw.parent / f'{raw.name}-pub'
+    build(raw, out.resolve(), fetch_remote=args.fetch_images)
+
+
+if __name__ == '__main__':
+    main()
