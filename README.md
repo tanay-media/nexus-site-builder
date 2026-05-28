@@ -1,43 +1,43 @@
 # Nexus Site Builder
 
-Dermatology static site export + **HEA-001 Trail 5** publisher theme (magazine-style health layout).
+Dermatology static site + **HEA-001 Trail 5** publisher theme.
 
-## Contents
+## Live site
 
-| Folder | Description |
-|--------|-------------|
-| `trail-5/` | Theme source: `pub.css`, `pub.js`, `build_pages.py`, placeholders |
-| `0e2dba5e-b89a-4f6a-81be-1cc735c629c9/` | Raw Archetype HTML export |
-| `0e2dba5e-b89a-4f6a-81be-1cc735c629c9-pub/` | **Built themed site** (host this folder) |
+**https://tanay-media.github.io/nexus-site-builder/**
+
+After push, wait 2–3 minutes for GitHub Actions. In repo **Settings → Pages**, source must be **GitHub Actions** (not “Deploy from branch”).
+
+## Repo layout
+
+| Path | Purpose |
+|------|---------|
+| `trail-5/` | Theme (`pub.css`, `pub.js`, `build_pages.py`) |
+| `images/` | Real images (filenames match raw HTML / WordPress) |
+| `0e2dba5e-…/` | Raw Archetype export |
+| `0e2dba5e-…-pub/` | Themed build (local backup) |
+| `docs/` | **Deployed site** (built by CI / `build-for-github.sh`) |
+
+## Build & push
+
+```bash
+./build-for-github.sh
+git add -A
+git commit -m "Rebuild site"
+git push
+```
+
+`build-for-github.sh` reads `images/`, writes themed HTML into `docs/` with correct `/nexus-site-builder/…` paths for CSS and links.
+
+## Images (no HTML edits)
+
+Put files in `images/` with the same names as in raw HTML, e.g. `hyaluronic-acid-hero-1.png`. Rebuild copies them to `docs/assets/media/`.
 
 ## Local preview
 
 ```bash
-cd 0e2dba5e-b89a-4f6a-81be-1cc735c629c9-pub
-python3 -m http.server 8888
+cd docs && python3 -m http.server 8888
+# open http://localhost:8888/  (paths are for GitHub; styling may need --base-url "" for local-only)
 ```
 
-Open **http://localhost:8888/**
-
-## Rebuild themed site
-
-```bash
-cd trail-5
-python3 generate_assets.py
-python3 build_pages.py --site ../0e2dba5e-b89a-4f6a-81be-1cc735c629c9
-```
-
-Add `--fetch-images` if WordPress media is reachable at `dermat.local`.
-
-## GitHub Pages
-
-**Live site (homepage):** https://tanay-media.github.io/nexus-site-builder/
-
-Push to `main` — workflow deploys the themed build. In repo **Settings → Pages**, set source to **GitHub Actions** (not “Deploy from branch”).
-
-Rebuild for GitHub with correct asset paths:
-
-```bash
-cd trail-5
-python3 build_pages.py --site ../0e2dba5e-b89a-4f6a-81be-1cc735c629c9 --base-url /nexus-site-builder
-```
+For local dev without path prefix, build with `--base-url ""` into `-pub`.

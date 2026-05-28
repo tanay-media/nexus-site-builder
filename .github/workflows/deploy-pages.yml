@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -23,9 +23,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Pillow for placeholder assets
+        run: pip install Pillow
+
+      - name: Build themed site (with images/ folder + GitHub paths)
+        run: |
+          cd trail-5
+          python3 generate_assets.py
+          python3 build_pages.py \
+            --site ../0e2dba5e-b89a-4f6a-81be-1cc735c629c9 \
+            --out ../docs \
+            --base-url /nexus-site-builder
+
+      - uses: actions/configure-pages@v5
+
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: 0e2dba5e-b89a-4f6a-81be-1cc735c629c9-pub
+          path: docs
 
       - id: deployment
         uses: actions/deploy-pages@v4

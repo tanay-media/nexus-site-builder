@@ -92,12 +92,22 @@ class ImageRegistry:
     """Map remote Archetype/WP image URLs to local /assets/media/ paths."""
 
     def __init__(
-        self, media_dir: Path, placeholders: list[Path], fetch_remote: bool = False,
+        self,
+        media_dir: Path,
+        placeholders: list[Path],
+        fetch_remote: bool = False,
+        images_source: Optional[Path] = None,
     ) -> None:
         self.media_dir = media_dir
         self.placeholders = placeholders or []
         self.fetch_remote = fetch_remote
+        self.images_source = images_source
         self._map: dict[str, str] = {}
+        self._basename_index: dict[str, Path] = {}
+        if images_source and images_source.is_dir():
+            for f in images_source.iterdir():
+                if f.is_file() and f.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
+                    self._basename_index[f.name.lower()] = f
         self.media_dir.mkdir(parents=True, exist_ok=True)
 
     def ingest_html(self, text: str) -> None:
@@ -121,6 +131,16 @@ class ImageRegistry:
 
     def _materialize(self, url: str) -> str:
         parsed = url.split('?')[0]
+        basename = Path(parsed).name
+        # Match repo images/ folder by filename (same names as WP uploads in raw HTML)
+        if basename and self._basename_index:
+            src = self._basename_index.get(basename.lower())
+            if src:
+                dest = self.media_dir / basename
+                if not dest.exists():
+                    shutil.copy(src, dest)
+                return u(f'/assets/media/{basename}')
+
         ext = Path(parsed).suffix.lower()
         if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
             ext = '.jpg'
@@ -855,7 +875,17 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
     for f in placeholders:
         shutil.copy(f, assets_out / f.name)
 
-    images = ImageRegistry(assets_out / 'media', placeholders, fetch_remote=fetch_remote)
+    images_source = raw_dir.parent / 'images'
+    if not images_source.is_dir():
+        images_source = None
+    images = ImageRegistry(
+        assets_out / 'media',
+        placeholders,
+        fetch_remote=fetch_remote,
+        images_source=images_source,
+    )
+    if images_source:
+        print(f'  Using local images: {images_source} ({len(images._basename_index)} files)')
     for fp in raw_dir.rglob('index.html'):
         images.ingest_html(fp.read_text(encoding='utf-8', errors='replace'))
 
@@ -912,6 +942,8 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
                         render_article(site, art, transform_content(main, images), [], [('Home', '/')], []),
                         encoding='utf-8',
                     )
+
+    (out_dir / '.nojekyll').touch(exist_ok=True)
 
     n_media = len(list((assets_out / 'media').glob('*')))
     print(f'Built {len(list(out_dir.rglob("index.html")))} pages → {out_dir}')
