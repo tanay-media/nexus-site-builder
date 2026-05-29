@@ -26,7 +26,7 @@ from typing import Optional
 
 TRAIL_DIR = Path(__file__).resolve().parent
 BASE_URL = ''  # e.g. /nexus-site-builder for GitHub project Pages
-THEME_VERSION = '20260529f'  # bump when pub.css/pub.js change (cache bust)
+THEME_VERSION = '20260529g'  # bump when pub.css/pub.js change (cache bust)
 
 ASSET_IMAGES = [
     "hero-wellness.jpg", "home-featured.jpg", "beauty-face.jpg", "skincare-products.jpg",
@@ -122,6 +122,46 @@ VIDEO_SPOTLIGHT: tuple[VideoSpotlight, ...] = (
 )
 
 VIDEO_BY_PATH: dict[str, str] = {v.article_path: v.youtube_id for v in VIDEO_SPOTLIGHT}
+
+# Footer links in raw export that have no source page — build minimal hub stubs
+FOOTER_STUB_HUBS: dict[str, dict] = {
+    '/skincare-products/sunscreens/': {
+        'title': 'Sunscreens',
+        'meta': 'SPF guides, sunscreen picks, and dermatologist-backed sun protection advice.',
+        'parent': '/skincare-products/',
+        'article_paths': ['/body-care/best-body-sunscreens/'],
+    },
+    '/skin-conditions/psoriasis/': {
+        'title': 'Psoriasis',
+        'meta': 'Expert guides on psoriasis symptoms, triggers, and when to see a dermatologist.',
+        'parent': '/skin-conditions/',
+        'article_paths': ['/skin-conditions/when-see-dermatologist/'],
+    },
+    '/skin-conditions/rosacea/': {
+        'title': 'Rosacea',
+        'meta': 'Rosacea care, triggers, and gentle skincare strategies reviewed by experts.',
+        'parent': '/skin-conditions/',
+        'article_paths': [
+            '/skin-types-concerns/sensitive-skin/sensitive-skin-care-routine/',
+            '/skin-types-concerns/sensitive-skin/best-ingredients-sensitive-skin/',
+        ],
+    },
+    '/active-ingredients/retinol/': {
+        'title': 'Retinol',
+        'meta': 'Retinol guides for beginners — strength, usage, and how it compares to tretinoin.',
+        'parent': '/active-ingredients/',
+        'article_paths': ['/active-ingredients/retinol-vs-tretinoin/'],
+    },
+    '/active-ingredients/vitamin-c/': {
+        'title': 'Vitamin C',
+        'meta': 'Vitamin C skincare benefits and how antioxidants support brighter, healthier skin.',
+        'parent': '/active-ingredients/',
+        'article_paths': [
+            '/active-ingredients/niacinamide/',
+            '/active-ingredients/hyaluronic-acid/',
+        ],
+    },
+}
 
 REVIEWERS = [
     {'name': 'Dr. Sarah Chen', 'cred': 'Board-Certified Dermatologist', 'img': 'expert-1.jpg'},
@@ -409,6 +449,79 @@ def parse_footer(html_text: str) -> list[tuple[str, list[tuple[str, str]]]]:
         links = re.findall(r'<a href="([^"]+)">([^<]+)</a>', col.group(2))
         cols.append((title, links))
     return cols
+
+
+def norm_path(path: str) -> str:
+    p = path if path.startswith('/') else '/' + path
+    return p if p.endswith('/') else p + '/'
+
+
+def ensure_footer_stub_hubs(
+    hub_by_path: dict[str, HubPage],
+    site: SiteData,
+    images: Optional[ImageRegistry] = None,
+) -> None:
+    """Create hub pages for footer links that have no raw export."""
+    by_path = {a.path: a for a in site.articles}
+    for path, spec in FOOTER_STUB_HUBS.items():
+        if path in hub_by_path:
+            continue
+        parent = norm_path(spec.get('parent', '/'))
+        parent_hub = hub_by_path.get(parent)
+        arts = [by_path[p] for p in spec.get('article_paths', []) if p in by_path]
+        hero_img = ''
+        if arts and arts[0].image:
+            hero_img = arts[0].image
+        elif parent_hub and parent_hub.cat.image:
+            hero_img = parent_hub.cat.image
+        elif images:
+            hero_img = images.resolve_for_path(path)
+        crumbs: list[tuple[str, str]] = [('Home', '/')]
+        if parent_hub and parent_hub.breadcrumbs:
+            crumbs = [
+                (lbl, href) for lbl, href in parent_hub.breadcrumbs
+                if lbl.lower() not in ('dermatology',)
+            ]
+        elif parent_hub:
+            crumbs.append((parent_hub.cat.title, parent))
+        elif parent != '/':
+            crumbs.append((parent.strip('/').split('/')[-1].replace('-', ' ').title(), parent))
+        crumbs.append((spec['title'], ''))
+        cat = Category(
+            title=spec['title'],
+            path=path,
+            meta=spec.get('meta', ''),
+            image=hero_img,
+        )
+        hub_by_path[path] = HubPage(
+            cat=cat,
+            intro=f'<p>{html.escape(spec.get("meta", ""))}</p>',
+            articles=arts,
+            breadcrumbs=crumbs,
+        )
+
+
+def sanitize_footer_links(site: SiteData, built_paths: set[str]) -> None:
+    """Drop or rewrite footer links that would 404."""
+    sanitized: list[tuple[str, list[tuple[str, str]]]] = []
+    for title, links in site.footer_cols:
+        clean: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for href, lbl in links:
+            href = norm_path(href)
+            if href not in built_paths:
+                parent = norm_path('/'.join(href.strip('/').split('/')[:-1]) or '/')
+                if parent in built_paths:
+                    href = parent
+                else:
+                    continue
+            if href in seen:
+                continue
+            seen.add(href)
+            clean.append((href, lbl))
+        if clean:
+            sanitized.append((title, clean))
+    site.footer_cols = sanitized
 
 
 def parse_feed_cards(html_text: str, images: Optional[ImageRegistry] = None) -> list[Article]:
@@ -1640,12 +1753,23 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
     for rel in sorted(hub_by_path.keys(), key=lambda p: p.count('/'), reverse=True):
         enrich_hub(hub_by_path[rel], site, hub_by_path, images)
 
+    ensure_footer_stub_hubs(hub_by_path, site, images)
+    for rel in sorted(hub_by_path.keys(), key=lambda p: p.count('/'), reverse=True):
+        if rel in FOOTER_STUB_HUBS:
+            enrich_hub(hub_by_path[rel], site, hub_by_path, images)
+
     for hub in hub_by_path.values():
         backfill_article_images(hub.articles, by_path, images)
         for topic in hub.topics:
             backfill_article_images(topic.articles, by_path, images)
 
     site.nav_menus = build_nav_menus(hub_by_path, site.articles)
+
+    built_paths = set(hub_by_path.keys()) | {a.path for a in site.articles}
+    built_paths |= {norm_path(f'/{p}') for p in [
+        'about', 'contact', 'privacy-policy', 'cookie-policy', 'terms-of-use',
+    ]}
+    sanitize_footer_links(site, built_paths)
 
     # Homepage (after hubs enriched for browse grids)
     (out_dir / 'index.html').write_text(render_homepage(site, hub_by_path), encoding='utf-8')
