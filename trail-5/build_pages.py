@@ -125,6 +125,9 @@ class HubPage:
     breadcrumbs: list[tuple[str, str]] = field(default_factory=list)
 
 
+IMG_SRC_RE = r'<img[^>]*\bsrc="([^"]+)"'
+
+
 class ImageRegistry:
     """Map remote Archetype/WP image URLs to local /assets/media/ paths."""
 
@@ -206,6 +209,50 @@ class ImageRegistry:
             except (urllib.error.URLError, OSError, TimeoutError):
                 continue
         return False
+
+    def _copy_basename_file(self, src: Path) -> str:
+        dest = self.media_dir / src.name
+        if not dest.exists():
+            shutil.copy(src, dest)
+        return f'/assets/media/{src.name}'
+
+    def resolve_for_path(self, rel_path: str) -> str:
+        """Match images/ files by URL slug (e.g. hyaluronic-acid → hyaluronic-acid-hero-1.png)."""
+        slug = rel_path.strip('/').split('/')[-1]
+        if not slug or not self._basename_index:
+            return ''
+        candidates: list[str] = []
+        for stem in (f'{slug}-hero-1', f'{slug}-hero', f'{slug}-img-1', f'{slug}-img', slug):
+            for ext in ('.png', '.jpg', '.jpeg', '.webp'):
+                candidates.append(f'{stem}{ext}'.lower())
+        for name in candidates:
+            src = self._basename_index.get(name)
+            if src:
+                return self._copy_basename_file(src)
+        slug_flat = slug.replace('-', '')
+        slug_prefix = slug_flat[:12]
+        slug_tokens = {t for t in re.split(r'[-_]', slug) if t and t not in ('vs', 'and', 'the', 'for', 'a', 'an')}
+        best_score = 0
+        best_path = ''
+        for name, src in self._basename_index.items():
+            base = name.rsplit('.', 1)[0]
+            base_flat = base.replace('-', '')
+            if slug in base or slug_flat in base_flat:
+                if '-hero' in base:
+                    return self._copy_basename_file(src)
+                if not best_path:
+                    best_path = self._copy_basename_file(src)
+            if len(slug_prefix) >= 8 and slug_prefix in base_flat:
+                if not best_path:
+                    best_path = self._copy_basename_file(src)
+            base_tokens = {t for t in re.split(r'[-_]', base) if t and t not in ('img', 'hero', 'jpg', 'png', 'jpeg', 'webp')}
+            norm_slug = {t.rstrip('s') for t in slug_tokens}
+            norm_base = {t.rstrip('s') for t in base_tokens}
+            overlap = len(norm_slug & norm_base)
+            if overlap >= 2 and overlap > best_score:
+                best_score = overlap
+                best_path = self._copy_basename_file(src)
+        return best_path
 
     def _copy_placeholder(self, dest: Path) -> None:
         if self.placeholders:
@@ -318,24 +365,31 @@ def parse_footer(html_text: str) -> list[tuple[str, list[tuple[str, str]]]]:
 def parse_feed_cards(html_text: str, images: Optional[ImageRegistry] = None) -> list[Article]:
     articles = []
     for m in re.finditer(
-        r'<a href="([^"]+)" class="arc-feed-card">.*?'
-        r'(?:<img[^>]+src="([^"]*)"[^>]*>)?.*?'
-        r'class="arc-feed-type[^"]*">([^<]*)</div>.*?'
-        r'class="arc-feed-title">([^<]*)</div>.*?'
-        r'class="arc-feed-excerpt">([^<]*)</div>',
+        r'<a href="([^"]+)" class="arc-feed-card">(.*?)</a>',
         html_text,
         re.S,
     ):
-        path, img, badge, title, desc = m.groups()
+        path, block = m.groups()
+        img_m = re.search(IMG_SRC_RE, block)
+        img = img_m.group(1) if img_m else ''
+        badge = extract(r'class="arc-feed-type[^"]*">([^<]*)</div>', block) or 'Guide'
+        title = extract(r'class="arc-feed-title">([^<]*)</div>', block) or ''
+        desc = extract(r'class="arc-feed-excerpt">([^<]*)</div>', block) or ''
+        if not title:
+            continue
+        art_path = path if path.startswith('/') else '/' + path
+        art_img = images.resolve(img) if images and img else ''
+        if images and not art_img:
+            art_img = images.resolve_for_path(art_path)
         kicker = badge_to_kicker(badge)
         articles.append(Article(
             title=html.unescape(title.strip()),
             desc=html.unescape(desc.strip()),
-            path=path if path.startswith('/') else '/' + path,
+            path=art_path,
             kicker=kicker,
-            image=images.resolve(img or '') if images else (img or ''),
+            image=art_img,
             badge=badge.strip(),
-            cat=path.strip('/').split('/')[0] if path else 'general',
+            cat=art_path.strip('/').split('/')[0] if art_path else 'general',
         ))
     return articles
 
@@ -365,11 +419,13 @@ def articles_under(prefix: str, articles: list[Article]) -> list[Article]:
     return [a for a in articles if a.path.startswith(prefix) and a.path != prefix]
 
 
-def enrich_hub(hub: HubPage, site: SiteData, hub_by_path: dict[str, HubPage]) -> None:
+def enrich_hub(hub: HubPage, site: SiteData, hub_by_path: dict[str, HubPage], images: Optional[ImageRegistry] = None) -> None:
     for topic in hub.topics:
         sub = hub_by_path.get(topic.path)
         if sub and sub.cat.image:
             topic.image = sub.cat.image
+        elif images and not topic.image:
+            topic.image = images.resolve_for_path(topic.path)
         topic.articles = articles_under(topic.path, site.articles)
         if not topic.image and topic.articles:
             topic.image = topic.articles[0].image
@@ -378,6 +434,8 @@ def enrich_hub(hub: HubPage, site: SiteData, hub_by_path: dict[str, HubPage]) ->
                 if nested.image:
                     topic.image = nested.image
                     break
+        if images:
+            backfill_article_images(topic.articles, {a.path: a for a in site.articles}, images)
 
 
 def hub_topic_slug(topic: HubTopic) -> str:
@@ -461,21 +519,28 @@ def parse_hub_page(
         ))
     articles: list[Article] = []
     for m in re.finditer(
-        r'<a href="([^"]+)" class="arch-hub-article-card">.*?'
-        r'(?:<img[^>]+src="([^"]*)"[^>]*>)?.*?'
-        r'class="arch-hub-article-type">([^<]*)</div>.*?'
-        r'class="arch-hub-article-title">([^<]*)</div>.*?'
-        r'class="arch-hub-article-excerpt">([^<]*)</div>',
+        r'<a href="([^"]+)" class="arch-hub-article-card">(.*?)</a>',
         html_text,
         re.S,
     ):
-        path, img, badge, art_title, art_desc = m.groups()
+        path, block = m.groups()
+        img_m = re.search(IMG_SRC_RE, block)
+        img = img_m.group(1) if img_m else ''
+        badge = extract(r'class="arch-hub-article-type">([^<]*)</div>', block) or 'Guide'
+        art_title = extract(r'class="arch-hub-article-title">([^<]*)</div>', block) or ''
+        art_desc = extract(r'class="arch-hub-article-excerpt">([^<]*)</div>', block) or ''
+        if not art_title:
+            continue
+        art_path = path if path.startswith('/') else '/' + path
+        art_img = images.resolve(img) if images and img else ''
+        if images and not art_img:
+            art_img = images.resolve_for_path(art_path)
         articles.append(Article(
             title=html.unescape(art_title.strip()),
             desc=html.unescape(art_desc.strip()),
-            path=path if path.startswith('/') else '/' + path,
+            path=art_path,
             kicker=badge_to_kicker(badge),
-            image=images.resolve(img or '') if images else (img or ''),
+            image=art_img,
             cat=rel_url.strip('/').split('/')[0] if rel_url else 'general',
         ))
     apply_reviewers(articles)
@@ -535,21 +600,29 @@ def parse_article_page(
     body = extract(r'<div class="archetype-content arch-article-body">(.*)</div>\s*<!-- Prev', html_text)
     if not body:
         body = extract(r'<div class="archetype-content arch-article-body">(.*)</div>\s*<div class="arch-article-nav"', html_text)
-    img_m = re.search(
-        r'class="[^"]*arch-article[^"]*"[^>]*>.*?<img[^>]+src="([^"]+)"'
-        r'|<img[^>]+class="[^"]*arch-article[^"]*"[^>]+src="([^"]+)"'
-        r'|<div class="archetype-content[^"]*"[^>]*>[\s\S]*?<img[^>]+src="([^"]+)"',
-        html_text,
-        re.I | re.S,
-    )
     hero_img = ''
-    if img_m:
-        hero_img = next(g for g in img_m.groups() if g) or ''
+    feat = re.search(
+        r'class="archetype-featured-image-wrap"[\s\S]*?' + IMG_SRC_RE,
+        html_text, re.I,
+    )
+    if feat:
+        hero_img = feat.group(1)
     if not hero_img:
-        hub = re.search(r'class="arch-hub-article-img"[^>]+src="([^"]+)"', html_text)
-        feed = re.search(r'class="arc-feed-img"[^>]+src="([^"]+)"', html_text)
+        feat2 = re.search(r'class="arch-featured-image"[^>]*\bsrc="([^"]+)"', html_text, re.I)
+        if feat2:
+            hero_img = feat2.group(1)
+    if not hero_img:
+        hub = re.search(r'class="arch-hub-article-img"[^>]*\bsrc="([^"]+)"', html_text)
+        feed = re.search(r'class="arc-feed-img"[^>]*\bsrc="([^"]+)"', html_text)
         hero_img = (hub or feed).group(1) if (hub or feed) else ''
-    resolved = images.resolve(hero_img) if images and hero_img else hero_img
+    if not hero_img:
+        hero_img = images.resolve_for_path(rel_url) if images else ''
+    if hero_img:
+        resolved = images.resolve(hero_img) if images and not hero_img.startswith('/assets/') else hero_img
+    elif images:
+        resolved = images.resolve_for_path(rel_url)
+    else:
+        resolved = ''
     return Article(
         title=title,
         desc=desc or (body[:160] + '...' if body else ''),
@@ -610,11 +683,49 @@ def brand_slug(name: str) -> str:
     return 'dermat' if 'dermat' in n else n.split()[0][:10]
 
 
-def img_for_index(i: int, article_img: str = '') -> str:
+def backfill_article_images(articles: list[Article], by_path: dict[str, Article], images: ImageRegistry) -> None:
+    for a in articles:
+        if a.image and a.image.startswith('/assets/'):
+            continue
+        peer = by_path.get(a.path)
+        if peer and peer.image and peer.image.startswith('/assets/'):
+            a.image = peer.image
+            continue
+        if a.image and a.image.startswith('http'):
+            a.image = images.resolve(a.image)
+            continue
+        slug_img = images.resolve_for_path(a.path)
+        if not slug_img:
+            parts = a.path.strip('/').split('/')
+            for end in range(len(parts) - 1, 0, -1):
+                parent = '/' + '/'.join(parts[:end]) + '/'
+                slug_img = images.resolve_for_path(parent)
+                if slug_img:
+                    break
+        if slug_img:
+            a.image = slug_img
+
+
+def img_for_index(i: int, article_img: str = '', article_path: str = '', images: Optional[ImageRegistry] = None) -> str:
+    if article_img and article_img.startswith('/assets/'):
+        path = article_img if article_img.startswith('/') else f'/{article_img}'
+        return u(path)
+    if article_img and article_img.startswith('http') and images:
+        resolved = images.resolve(article_img)
+        if resolved:
+            return u(resolved)
+    if images and article_path:
+        resolved = images.resolve_for_path(article_path)
+        if resolved:
+            return u(resolved)
     if article_img:
         path = article_img if article_img.startswith('/') else f'/{article_img}'
         return u(path)
     return u(f'/assets/{ASSET_IMAGES[i % len(ASSET_IMAGES)]}')
+
+
+def article_thumb(a: Article, i: int, images: Optional[ImageRegistry] = None) -> str:
+    return img_for_index(i, a.image, a.path, images)
 
 
 def head_block(title: str, desc: str) -> str:
@@ -708,7 +819,7 @@ def trending_strip(articles: list[Article]) -> str:
 
 
 def card_featured(a: Article, i: int) -> str:
-    img = img_for_index(i, a.image)
+    img = article_thumb(a, i)
     return f"""<a href="{html.escape(u(a.path))}" class="pub-card pub-card--featured">
   <img class="pub-card__img" src="{html.escape(img)}" alt="" loading="lazy">
   <div class="pub-card__body">
@@ -721,7 +832,7 @@ def card_featured(a: Article, i: int) -> str:
 
 
 def card_compact(a: Article, i: int) -> str:
-    img = img_for_index(i + 3, a.image)
+    img = article_thumb(a, i + 3)
     return f"""<a href="{html.escape(u(a.path))}" class="pub-card pub-card--compact">
   <img class="pub-card__img" src="{html.escape(img)}" alt="" loading="lazy">
   <div><span class="pub-card__kicker">{html.escape(a.kicker)}</span>
@@ -730,7 +841,7 @@ def card_compact(a: Article, i: int) -> str:
 
 
 def card_tile(a: Article, i: int, *, hero: bool = False) -> str:
-    img = img_for_index(i, a.image)
+    img = article_thumb(a, i)
     body = f'<h4 class="pub-card__title">{html.escape(a.title)}</h4>'
     if hero:
         body = (
@@ -947,7 +1058,7 @@ def hub_topic_section(topic: HubTopic, idx: int) -> str:
 
 
 def hub_article_card(a: Article, i: int) -> str:
-    img = img_for_index(i, a.image)
+    img = article_thumb(a, i)
     return f"""<a href="{html.escape(u(a.path))}" class="pub-hub-article">
   <img class="pub-hub-article__img" src="{html.escape(img)}" alt="" loading="lazy">
   <div class="pub-hub-article__body">
@@ -1240,8 +1351,16 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
             apply_reviewers(hub.articles)
         hub_by_path[rel] = hub
 
+    by_path = {a.path: a for a in site.articles}
+    backfill_article_images(site.articles, by_path, images)
+
     for rel in sorted(hub_by_path.keys(), key=lambda p: p.count('/'), reverse=True):
-        enrich_hub(hub_by_path[rel], site, hub_by_path)
+        enrich_hub(hub_by_path[rel], site, hub_by_path, images)
+
+    for hub in hub_by_path.values():
+        backfill_article_images(hub.articles, by_path, images)
+        for topic in hub.topics:
+            backfill_article_images(topic.articles, by_path, images)
 
     for rel, hub in hub_by_path.items():
         parts = rel.strip('/').split('/')
