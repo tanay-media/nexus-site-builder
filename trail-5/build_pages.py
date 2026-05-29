@@ -26,7 +26,7 @@ from typing import Optional
 
 TRAIL_DIR = Path(__file__).resolve().parent
 BASE_URL = ''  # e.g. /nexus-site-builder for GitHub project Pages
-THEME_VERSION = '20260529b'  # bump when pub.css/pub.js change (cache bust)
+THEME_VERSION = '20260529c'  # bump when pub.css/pub.js change (cache bust)
 
 ASSET_IMAGES = [
     "hero-wellness.jpg", "home-featured.jpg", "beauty-face.jpg", "skincare-products.jpg",
