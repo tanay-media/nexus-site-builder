@@ -26,7 +26,7 @@ from typing import Optional
 
 TRAIL_DIR = Path(__file__).resolve().parent
 BASE_URL = ''  # e.g. /nexus-site-builder for GitHub project Pages
-THEME_VERSION = '20260529c'  # bump when pub.css/pub.js change (cache bust)
+THEME_VERSION = '20260529d'  # bump when pub.css/pub.js change (cache bust)
 
 ASSET_IMAGES = [
     "hero-wellness.jpg", "home-featured.jpg", "beauty-face.jpg", "skincare-products.jpg",
@@ -822,9 +822,11 @@ def shell_header(site: SiteData, active: str = '') -> str:
     </div>
   </div>
   <nav class="pub-nav" aria-label="Main">
-    <div class="pub-container pub-nav__inner">
-      <a class="pub-nav__link{home_active}" href="{u('/')}">Home</a>
-      {cat_nav}
+    <div class="pub-container">
+      <div class="pub-nav__inner">
+        <a class="pub-nav__link{home_active}" href="{u('/')}">Home</a>
+        {cat_nav}
+      </div>
     </div>
   </nav>
 </header>"""
