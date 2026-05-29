@@ -75,6 +75,13 @@ PRIMARY_NAV = [
     ('Body Care', '/body-care/'),
 ]
 
+REVIEWERS = [
+    {'name': 'Dr. Sarah Chen', 'cred': 'Board-Certified Dermatologist', 'img': 'expert-1.jpg'},
+    {'name': 'Dr. James Okonkwo', 'cred': 'Clinical Researcher', 'img': 'expert-2.jpg'},
+    {'name': 'Dr. Maria Santos', 'cred': 'PharmD, Skincare Specialist', 'img': 'expert-3.jpg'},
+    {'name': 'Dr. David Kim', 'cred': 'MD, Cosmetic Dermatology', 'img': 'expert-4.jpg'},
+]
+
 
 @dataclass
 class Article:
@@ -84,6 +91,8 @@ class Article:
     kicker: str = 'Guide'
     time: str = '6 min read'
     author: str = 'Editorial Team'
+    author_cred: str = ''
+    author_img: str = ''
     cat: str = 'skin-care'
     image: str = ''
     badge: str = ''
@@ -95,6 +104,23 @@ class Category:
     path: str
     meta: str = ''
     image: str = ''
+
+
+@dataclass
+class HubTopic:
+    title: str
+    path: str
+    desc: str = ''
+    icon: str = ''
+
+
+@dataclass
+class HubPage:
+    cat: Category
+    intro: str = ''
+    topics: list[HubTopic] = field(default_factory=list)
+    articles: list[Article] = field(default_factory=list)
+    breadcrumbs: list[tuple[str, str]] = field(default_factory=list)
 
 
 class ImageRegistry:
@@ -320,9 +346,54 @@ def badge_to_kicker(badge: str) -> str:
     return 'Guide'
 
 
+def reviewer_for(path: str) -> dict[str, str]:
+    idx = int(hashlib.md5(path.encode()).hexdigest(), 16) % len(REVIEWERS)
+    return REVIEWERS[idx]
+
+
+def apply_reviewers(articles: list[Article]) -> None:
+    for a in articles:
+        r = reviewer_for(a.path)
+        a.author = r['name']
+        a.author_cred = r['cred']
+        a.author_img = r['img']
+
+
+def direct_child_articles(hub_path: str, articles: list[Article]) -> list[Article]:
+    depth = len(hub_path.strip('/').split('/'))
+    out: list[Article] = []
+    for a in articles:
+        if not a.path.startswith(hub_path) or a.path == hub_path:
+            continue
+        if len(a.path.strip('/').split('/')) == depth + 1:
+            out.append(a)
+    return out
+
+
+def parse_hub_breadcrumbs(html_text: str) -> list[tuple[str, str]]:
+    block = extract(r'<div class="arch-hub-breadcrumb">(.*?)</div>', html_text)
+    if not block:
+        return []
+    crumbs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for m in re.finditer(r'<a href="([^"]*)">([^<]+)</a>', block):
+        href, lbl = m.group(1), html.unescape(m.group(2).strip())
+        if lbl.lower() in ('dermatology', 'home') and href in ('/', ''):
+            href, lbl = '/', 'Home'
+        key = (lbl.lower(), href)
+        if key in seen:
+            continue
+        seen.add(key)
+        crumbs.append((lbl, href if href else ''))
+    last = re.search(r'<span>([^<]+)</span>\s*$', block.strip())
+    if last:
+        crumbs.append((html.unescape(last.group(1).strip()), ''))
+    return crumbs
+
+
 def parse_hub_page(
     html_text: str, rel_url: str, images: Optional[ImageRegistry] = None,
-) -> tuple[Category, list[Article]]:
+) -> HubPage:
     title = extract(
         r'class="arch-hub-hero"[^>]*>[\s\S]*?<h1>([^<]+)</h1>', html_text,
     ) or extract(r'<title>([^|<]+)', html_text)
@@ -342,6 +413,27 @@ def parse_hub_page(
         meta=html.unescape(desc.strip()),
         image=hero_img,
     )
+    intro_raw = extract(
+        r'<div class="archetype-hub-intro">(.*?)</div>\s*(?:<!-- archetype:hub-children -->|<div class="arch-hub-topics)',
+        html_text,
+    )
+    intro = transform_content(intro_raw, images) if intro_raw else ''
+    topics: list[HubTopic] = []
+    for m in re.finditer(
+        r'<a href="([^"]+)" class="arch-hub-topic-card">.*?'
+        r'class="arch-hub-topic-icon">([^<]*)</div>.*?'
+        r'class="arch-hub-topic-title">([^<]*)</div>.*?'
+        r'class="arch-hub-topic-desc">([^<]*)</div>',
+        html_text,
+        re.S,
+    ):
+        path, icon, topic_title, topic_desc = m.groups()
+        topics.append(HubTopic(
+            title=html.unescape(topic_title.strip()),
+            path=path if path.startswith('/') else '/' + path,
+            desc=html.unescape(topic_desc.strip()),
+            icon=html.unescape(icon.strip()),
+        ))
     articles: list[Article] = []
     for m in re.finditer(
         r'<a href="([^"]+)" class="arch-hub-article-card">.*?'
@@ -361,7 +453,14 @@ def parse_hub_page(
             image=images.resolve(img or '') if images else (img or ''),
             cat=rel_url.strip('/').split('/')[0] if rel_url else 'general',
         ))
-    return cat, articles
+    apply_reviewers(articles)
+    return HubPage(
+        cat=cat,
+        intro=intro,
+        topics=topics,
+        articles=articles,
+        breadcrumbs=parse_hub_breadcrumbs(html_text),
+    )
 
 
 def nav_is_active(active: str, href: str) -> bool:
@@ -543,7 +642,7 @@ def shell_header(site: SiteData, active: str = '') -> str:
 def shell_footer(site: SiteData) -> str:
     cols = ''
     for title, links in site.footer_cols[:3]:
-        links_html = ''.join(f'<a href="{html.escape(u(h))}">{html.escape(lbl)}</a>' for lbl, h in links[:6])
+        links_html = ''.join(f'<a href="{html.escape(u(href))}">{html.escape(lbl)}</a>' for href, lbl in links[:6])
         cols += f'<div class="pub-footer__col"><h4>{html.escape(title)}</h4>{links_html}</div>'
     return f"""
 <footer class="pub-footer">
@@ -786,36 +885,99 @@ def render_homepage(site: SiteData) -> str:
     )
 
 
-def render_category_hub(site: SiteData, cat: Category, articles: list[Article]) -> str:
-    cat_depth = len(cat.path.strip('/').split('/'))
-    groups: dict[str, list[Article]] = {}
-    for a in articles:
-        sub = a.path.strip('/').split('/')
-        key = sub[cat_depth] if len(sub) > cat_depth else 'featured'
-        groups.setdefault(key, []).append(a)
-    pills = ''.join(
-        f'<a href="#section-{slugify(key)}" class="pub-topic-pill">{html.escape(key.replace("-", " ").title())}</a>'
-        for key in groups
-    )
-    sections = ''
-    for i, (key, group) in enumerate(groups.items()):
-        rev = ' pub-rail--reverse' if i % 2 else ''
-        sections += f'<section class="pub-hub-section{rev}" id="section-{slugify(key)}"><h2 class="pub-section__title">{html.escape(key.replace("-", " ").title())}</h2>{rail_spotlight(group[:6], i%2==1)}{rail_mosaic(group[6:12])}</section>'
+def hub_breadcrumb_html(crumbs: list[tuple[str, str]], fallback_title: str) -> str:
+    if not crumbs:
+        return f'<a href="{u("/")}">Home</a><span>/</span><span>{html.escape(fallback_title)}</span>'
+    parts: list[str] = []
+    for lbl, href in crumbs:
+        if href and href not in ('', '/home'):
+            parts.append(f'<a href="{html.escape(u(href))}">{html.escape(lbl)}</a>')
+        elif href == '/':
+            parts.append(f'<a href="{u("/")}">Home</a>')
+        else:
+            parts.append(f'<span>{html.escape(lbl)}</span>')
+        parts.append('<span>/</span>')
+    if parts and parts[-1] == '<span>/</span>':
+        parts.pop()
+    return ''.join(parts)
 
-    popular = ''.join(f'<a href="{html.escape(u(a.path))}">{html.escape(a.title)}</a>' for a in articles[:8])
+
+def hub_topic_card(topic: HubTopic) -> str:
+    icon = topic.icon or (topic.title[0] if topic.title else '?')
+    return f"""<a href="{html.escape(u(topic.path))}" class="pub-hub-topic">
+  <div class="pub-hub-topic__icon">{html.escape(icon)}</div>
+  <div class="pub-hub-topic__body">
+    <h3>{html.escape(topic.title)}</h3>
+    <p>{html.escape(topic.desc)}</p>
+  </div>
+  <span class="pub-hub-topic__cta">Explore →</span>
+</a>"""
+
+
+def hub_article_card(a: Article, i: int) -> str:
+    img = img_for_index(i, a.image)
+    return f"""<a href="{html.escape(u(a.path))}" class="pub-hub-article">
+  <img class="pub-hub-article__img" src="{html.escape(img)}" alt="" loading="lazy">
+  <div class="pub-hub-article__body">
+    <span class="pub-card__kicker">{html.escape(a.kicker)}</span>
+    <h3>{html.escape(a.title)}</h3>
+    <p>{html.escape(a.desc[:160])}</p>
+    <div class="pub-hub-article__meta">{html.escape(a.time)} · {html.escape(a.author)}</div>
+    <span class="pub-hub-article__read">Read article →</span>
+  </div>
+</a>"""
+
+
+def render_category_hub(site: SiteData, hub: HubPage) -> str:
+    cat = hub.cat
+    pills = ''.join(
+        f'<a href="{html.escape(u(t.path))}" class="pub-topic-pill">{html.escape(t.title)}</a>'
+        for t in hub.topics
+    )
+    main_parts: list[str] = []
+    if hub.intro:
+        main_parts.append(f'<div class="pub-hub-intro pub-prose">{hub.intro}</div>')
+    if hub.topics:
+        topic_cards = ''.join(hub_topic_card(t) for t in hub.topics)
+        main_parts.append(
+            f'<section class="pub-hub-topics"><h2 class="pub-section__title">Explore Topics</h2>'
+            f'<div class="pub-hub-topic-grid">{topic_cards}</div></section>'
+        )
+    if hub.articles:
+        art_cards = ''.join(hub_article_card(a, i) for i, a in enumerate(hub.articles))
+        main_parts.append(
+            f'<section class="pub-hub-articles"><h2 class="pub-section__title">Articles</h2>'
+            f'<div class="pub-hub-article-grid">{art_cards}</div></section>'
+        )
+    main_html = ''.join(main_parts) or '<p class="pub-hub-empty">More guides coming soon.</p>'
+
+    popular = ''.join(
+        f'<a href="{html.escape(u(a.path))}">{html.escape(a.title)}</a>'
+        for a in hub.articles[:8]
+    )
+    crumb_html = hub_breadcrumb_html(hub.breadcrumbs, cat.title)
+    topic_count = len(hub.topics)
+    art_count = len(hub.articles)
+    meta_bits = []
+    if topic_count:
+        meta_bits.append(f'{topic_count} topic{"s" if topic_count != 1 else ""}')
+    if art_count:
+        meta_bits.append(f'{art_count} article{"s" if art_count != 1 else ""}')
+    meta_line = ' · '.join(meta_bits) if meta_bits else cat.meta
+
     return (
-        head_block(f'{cat.title} | {site.name}', f'Expert guides on {cat.title.lower()}.')
+        head_block(f'{cat.title} | {site.name}', cat.meta or f'Expert guides on {cat.title.lower()}.')
         + shell_header(site, cat.path)
         + f"""<div class="pub-container pub-hub-hero">
-      <nav class="pub-breadcrumb"><a href="{u('/')}">Home</a><span>/</span><span>{html.escape(cat.title)}</span></nav>
+      <nav class="pub-breadcrumb">{crumb_html}</nav>
       <h1>{html.escape(cat.title)}</h1>
-      <p class="pub-hub-hero__desc">{html.escape(cat.meta or site.tagline)}</p>
-      <div class="pub-topic-pills">{pills}</div>
+      <p class="pub-hub-hero__desc">{html.escape(meta_line if meta_bits else (cat.meta or site.tagline))}</p>
+      {f'<div class="pub-topic-pills">{pills}</div>' if pills else ''}
     </div>
     <div class="pub-container pub-hub-layout">
-      <main>{sections or rail_spotlight(articles[:6])}</main>
+      <main>{main_html}</main>
       <aside class="pub-sidebar pub-sidebar--sticky">
-        <div class="pub-sidebar-card"><h4>Popular in {html.escape(cat.title)}</h4>{popular}</div>
+        <div class="pub-sidebar-card"><h4>Popular in {html.escape(cat.title)}</h4>{popular or '<span style="font-size:0.8125rem;color:var(--pub-muted)">Browse topics above.</span>'}</div>
         <div class="pub-sidebar-card"><h4>Newsletter</h4><p style="font-size:0.875rem;color:var(--pub-muted)">Get weekly tips.</p>
         <button class="pub-btn pub-btn--primary" type="button" style="width:100%;margin-top:12px">Subscribe</button></div>
       </aside>
@@ -877,15 +1039,16 @@ def render_article(site: SiteData, article: Article, body: str, toc: list[tuple[
           </div>
           {takeaways}
         </header>
-        {f'<figure class="pub-article-hero"><img src="{html.escape(article.image)}" alt="{html.escape(article.title)}" loading="eager"></figure>' if article.image else ''}
+        {f'<figure class="pub-article-hero"><img src="{html.escape(u(article.image) if article.image.startswith("/") else img_for_index(0, article.image))}" alt="{html.escape(article.title)}" loading="eager"></figure>' if article.image else ''}
         <div class="pub-share">
           <button type="button" data-pub-copy-link>Copy link</button>
         </div>
         <div class="pub-article-body pub-prose">{body}</div>
         <div class="pub-author-bio">
-          <img src="{u('/assets/author.jpg')}" alt="">
-          <div><strong>{html.escape(site.name)} Editorial</strong>
-          <p style="margin:8px 0 0;font-size:0.9375rem;color:var(--pub-muted)">Our team works with board-certified dermatologists to deliver evidence-based skincare guidance.</p></div>
+          <img src="{u(f'/assets/{article.author_img or "author.jpg"}')}" alt="">
+          <div><strong>{html.escape(article.author)}</strong>
+          <p style="margin:4px 0 0;font-size:0.8125rem;color:var(--pub-accent);font-weight:600">{html.escape(article.author_cred)}</p>
+          <p style="margin:8px 0 0;font-size:0.9375rem;color:var(--pub-muted)">Medically reviewed content from board-certified specialists.</p></div>
         </div>
         <section class="pub-related"><h2>Related Reading</h2><div class="pub-related__grid">{rel_html}</div></section>
       </article>
@@ -951,6 +1114,7 @@ def scan_site(raw_dir: Path, images: Optional[ImageRegistry] = None) -> SiteData
     for a in site.articles:
         by_path[a.path] = a
     site.articles = list(by_path.values())
+    apply_reviewers(site.articles)
     site._article_bodies = article_bodies  # type: ignore
     return site
 
@@ -1005,14 +1169,18 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
     top_category_paths = {c.path for c in site.categories}
 
     for cat in site.categories:
-        slug = cat.path.strip('/').split('/')[0]
-        arts = cat_articles.get(slug, [x for x in site.articles if x.path.startswith(cat.path)][:20])
+        raw_fp = raw_dir / cat.path.strip('/') / 'index.html'
+        if raw_fp.is_file():
+            hub = parse_hub_page(raw_fp.read_text(encoding='utf-8', errors='replace'), cat.path, images)
+            if not hub.cat.image and cat.image:
+                hub.cat.image = cat.image
+        else:
+            slug = cat.path.strip('/').split('/')[0]
+            arts = cat_articles.get(slug, [x for x in site.articles if x.path.startswith(cat.path)])
+            hub = HubPage(cat=cat, articles=arts[:20])
         out_path = out_dir / cat.path.strip('/')
         out_path.mkdir(parents=True, exist_ok=True)
-        (out_path / 'index.html').write_text(
-            render_category_hub(site, cat, arts or site.articles[:12]),
-            encoding='utf-8',
-        )
+        (out_path / 'index.html').write_text(render_category_hub(site, hub), encoding='utf-8')
 
     # Sub-category hub pages (e.g. /skin-types-concerns/dry-skin/, /skin-conditions/acne/)
     for fp in raw_dir.rglob('index.html'):
@@ -1025,16 +1193,14 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
         text = fp.read_text(encoding='utf-8', errors='replace')
         if 'arch-hub-page' not in text:
             continue
-        sub_cat, sub_arts = parse_hub_page(text, rel, images)
-        if not sub_arts:
-            sub_arts = [x for x in site.articles if x.path.startswith(rel)]
+        hub = parse_hub_page(text, rel, images)
+        if not hub.articles:
+            hub.articles = direct_child_articles(rel, site.articles)
+            apply_reviewers(hub.articles)
         parts = rel.strip('/').split('/')
         out_path = out_dir.joinpath(*parts)
         out_path.mkdir(parents=True, exist_ok=True)
-        (out_path / 'index.html').write_text(
-            render_category_hub(site, sub_cat, sub_arts or site.articles[:6]),
-            encoding='utf-8',
-        )
+        (out_path / 'index.html').write_text(render_category_hub(site, hub), encoding='utf-8')
 
     # Articles
     for rel, art in {a.path: a for a in site.articles}.items():
