@@ -730,6 +730,14 @@ def brand_slug(name: str) -> str:
     return 'dermat' if 'dermat' in n else n.split()[0][:10]
 
 
+def brand_logo_html() -> str:
+    return (
+        '<span class="pub-logo__dermat">dermat</span>'
+        '<span class="pub-logo__hub">hub</span>'
+        '<span class="pub-logo__tld">.com</span>'
+    )
+
+
 def backfill_article_images(articles: list[Article], by_path: dict[str, Article], images: ImageRegistry) -> None:
     for a in articles:
         if a.image and a.image.startswith('/assets/'):
@@ -789,7 +797,6 @@ def head_block(title: str, desc: str) -> str:
 
 
 def shell_header(site: SiteData, active: str = '') -> str:
-    brand = brand_slug(site.name)
     cat_nav = ''.join(
         f'<a class="pub-nav__link{" is-active" if nav_is_active(active, h) else ""}" href="{html.escape(u(h))}">{html.escape(lbl)}</a>'
         for lbl, h in PRIMARY_NAV
@@ -802,7 +809,7 @@ def shell_header(site: SiteData, active: str = '') -> str:
 <header class="pub-header">
   <div class="pub-container">
     <div class="pub-header__top">
-      <a class="pub-logo" href="{u('/')}">{html.escape(brand)}</a>
+      <a class="pub-logo" href="{u('/')}">{brand_logo_html()}</a>
       <div class="pub-header__actions">
         <input type="search" class="pub-search" placeholder="Search topics…" aria-label="Search">
         <a class="pub-sign-in" href="{u('/contact/')}">Sign in</a>
@@ -831,7 +838,7 @@ def shell_footer(site: SiteData) -> str:
 <footer class="pub-footer">
   <div class="pub-container pub-footer__grid">
     <div class="pub-footer__brand">
-      <span class="pub-logo">{html.escape(brand_slug(site.name))}</span>
+      <span class="pub-logo">{brand_logo_html()}</span>
       <p class="pub-footer__tagline">{html.escape(site.tagline)}</p>
     </div>
     {cols}

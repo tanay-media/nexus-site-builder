@@ -86,8 +86,14 @@ ul { margin: 0; padding: 0; list-style: none; }
   font-size: 1.625rem;
   font-weight: 800;
   letter-spacing: -0.04em;
-  color: var(--pub-navy);
   text-transform: lowercase;
+}
+.pub-logo__dermat,
+.pub-logo__tld {
+  color: var(--pub-navy);
+}
+.pub-logo__hub {
+  color: var(--pub-accent);
 }
 .pub-header__actions {
   display: flex;
@@ -919,7 +925,10 @@ ul { margin: 0; padding: 0; list-style: none; }
   grid-template-columns: 1fr;
 }
 @media (min-width: 768px) { .pub-footer__grid { grid-template-columns: 1.4fr repeat(3, 1fr); } }
-.pub-footer__brand .pub-logo { color: var(--pub-white); display: block; margin-bottom: 8px; }
+.pub-footer__brand .pub-logo { display: block; margin-bottom: 8px; }
+.pub-footer__brand .pub-logo__dermat,
+.pub-footer__brand .pub-logo__tld { color: var(--pub-white); }
+.pub-footer__brand .pub-logo__hub { color: var(--pub-accent); }
 .pub-footer__tagline { font-size: 0.875rem; margin: 0; opacity: 0.75; line-height: 1.5; }
 .pub-footer__col h4 {
   color: var(--pub-white);
