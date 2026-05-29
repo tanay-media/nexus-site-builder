@@ -26,6 +26,7 @@ from typing import Optional
 
 TRAIL_DIR = Path(__file__).resolve().parent
 BASE_URL = ''  # e.g. /nexus-site-builder for GitHub project Pages
+THEME_VERSION = '20260529b'  # bump when pub.css/pub.js change (cache bust)
 
 ASSET_IMAGES = [
     "hero-wellness.jpg", "home-featured.jpg", "beauty-face.jpg", "skincare-products.jpg",
@@ -792,12 +793,12 @@ def head_block(title: str, desc: str) -> str:
   <title>{html.escape(title)}</title>
   <meta name="description" content="{html.escape(desc)}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="stylesheet" href="{u('/assets/pub.css')}">
+  <link rel="stylesheet" href="{u(f'/assets/pub.css?v={THEME_VERSION}')}">
 </head>"""
 
 
 def shell_header(site: SiteData, active: str = '') -> str:
-    home_active = ' is-active' if active in ('/', '') else ''
+    home_active = ' is-active' if active == '/' else ''
     cat_nav = ''.join(
         nav_dropdown_item(lbl, h, site.nav_menus.get(h, []), active)
         for lbl, h in PRIMARY_NAV
@@ -845,7 +846,7 @@ def shell_footer(site: SiteData) -> str:
   </div>
   <div class="pub-container pub-footer__bar">© {datetime.now().year} {html.escape(site.name)}. All rights reserved. For informational purposes only.</div>
 </footer>
-<script src="{u('/assets/pub.js')}"></script>
+<script src="{u(f'/assets/pub.js?v={THEME_VERSION}')}"></script>
 <script>
 (function(){{
   var p=document.getElementById('pub-progress');
@@ -1451,7 +1452,7 @@ def render_article(site: SiteData, article: Article, body: str, toc: list[tuple[
 
     return (
         head_block(f'{article.title} | {site.name}', article.desc)
-        + shell_header(site)
+        + shell_header(site, article.path)
         + f"""<div class="pub-container pub-article-wrap">
       <article class="pub-article-main">
         <nav class="pub-breadcrumb">{crumb_html}</nav>
