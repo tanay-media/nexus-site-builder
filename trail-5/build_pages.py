@@ -75,6 +75,14 @@ PRIMARY_NAV = [
     ('Body Care', '/body-care/'),
 ]
 
+# Homepage browse grids (WebMD-style link panels)
+BROWSE_SECTIONS = [
+    ('Skin Conditions', '/skin-conditions/'),
+    ('Ingredients', '/active-ingredients/'),
+    ('Products', '/skincare-products/'),
+    ('Treatments & Procedures', '/treatments-procedures/'),
+]
+
 REVIEWERS = [
     {'name': 'Dr. Sarah Chen', 'cred': 'Board-Certified Dermatologist', 'img': 'expert-1.jpg'},
     {'name': 'Dr. James Okonkwo', 'cred': 'Clinical Researcher', 'img': 'expert-2.jpg'},
@@ -823,6 +831,73 @@ def trending_strip(articles: list[Article]) -> str:
 </div></section>"""
 
 
+def collect_browse_links(
+    hub: Optional[HubPage], articles: list[Article], hub_path: str, limit: int = 8,
+) -> list[tuple[str, str]]:
+    links: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(title: str, path: str) -> None:
+        if len(links) >= limit or path in seen or path == hub_path:
+            return
+        if not path.startswith(hub_path):
+            return
+        seen.add(path)
+        links.append((title, path))
+
+    if hub:
+        for topic in hub.topics:
+            add(topic.title, topic.path)
+        for art in hub.articles:
+            add(art.title, art.path)
+        for topic in hub.topics:
+            for art in topic.articles:
+                add(art.title, art.path)
+    for art in articles:
+        add(art.title, art.path)
+    return links[:limit]
+
+
+def browse_grid_html(links: list[tuple[str, str]]) -> str:
+    if not links:
+        return ''
+    ncols = min(4, max(2, (len(links) + 1) // 2))
+    per_col = -(-len(links) // ncols)
+    cols: list[str] = []
+    for col in range(ncols):
+        chunk = links[col * per_col:(col + 1) * per_col]
+        if not chunk:
+            continue
+        items = ''.join(
+            f'<a href="{html.escape(u(href))}" class="pub-browse__link">'
+            f'<span class="pub-browse__arrow" aria-hidden="true">→</span>'
+            f'{html.escape(title)}</a>'
+            for title, href in chunk
+        )
+        cols.append(f'<div class="pub-browse__col">{items}</div>')
+    return ''.join(cols)
+
+
+def render_browse_sections(site: SiteData, hub_by_path: dict[str, HubPage]) -> str:
+    blocks: list[str] = []
+    for title, hub_path in BROWSE_SECTIONS:
+        hub = hub_by_path.get(hub_path)
+        links = collect_browse_links(hub, site.articles, hub_path)
+        if not links:
+            continue
+        grid = browse_grid_html(links)
+        blocks.append(
+            f'<section class="pub-browse-block"><div class="pub-container">'
+            f'<div class="pub-browse__header">'
+            f'<h2 class="pub-browse__title">{html.escape(title.upper())}</h2>'
+            f'<a class="pub-browse__viewall" href="{html.escape(u(hub_path))}">View All</a>'
+            f'</div>'
+            f'<div class="pub-browse__panel"><div class="pub-browse__grid">{grid}</div></div>'
+            f'</div></section>'
+        )
+    return ''.join(blocks)
+
+
 def card_featured(a: Article, i: int) -> str:
     img = article_thumb(a, i)
     return f"""<a href="{html.escape(u(a.path))}" class="pub-card pub-card--featured">
@@ -914,7 +989,7 @@ def category_rail(section_title: str, articles: list[Article], idx: int, more_hr
 </section>"""
 
 
-def render_homepage(site: SiteData) -> str:
+def render_homepage(site: SiteData, hub_by_path: Optional[dict[str, HubPage]] = None) -> str:
     arts = site.articles
     if len(arts) < 12:
         arts = arts + arts  # cycle
@@ -1006,12 +1081,15 @@ def render_homepage(site: SiteData) -> str:
         for i in range(4)
     )
 
+    browse = render_browse_sections(site, hub_by_path or {}) if hub_by_path else ''
+
     return (
         head_block(f'{site.name} — Health & Wellness', site.tagline)
         + shell_header(site, '/')
         + trending_strip(arts)
         + hero
         + f'<section class="pub-quick-hits"><div class="pub-container pub-quick-hits__grid">{quick}</div></section>'
+        + browse
         + rails
         + f'<section class="pub-container"><div class="pub-editors"><h2 class="pub-section__title">Editor\'s Picks</h2><div class="pub-editors__grid">{editors}</div></div></section>'
         + f'<section class="pub-section"><div class="pub-container pub-ranked"><div class="pub-ranked__col"><h3>Most Read</h3>{ranked_l}</div><div class="pub-ranked__col"><h3>Latest</h3>{ranked_r}</div></div></section>'
@@ -1317,9 +1395,6 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
     site = scan_site(raw_dir, images)
     bodies: dict = getattr(site, '_article_bodies', {})
 
-    # Homepage
-    (out_dir / 'index.html').write_text(render_homepage(site), encoding='utf-8')
-
     # Category hubs
     cat_articles: dict[str, list[Article]] = {}
     for a in site.articles:
@@ -1366,6 +1441,9 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
         backfill_article_images(hub.articles, by_path, images)
         for topic in hub.topics:
             backfill_article_images(topic.articles, by_path, images)
+
+    # Homepage (after hubs enriched for browse grids)
+    (out_dir / 'index.html').write_text(render_homepage(site, hub_by_path), encoding='utf-8')
 
     for rel, hub in hub_by_path.items():
         parts = rel.strip('/').split('/')

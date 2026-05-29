@@ -442,6 +442,88 @@ ul { margin: 0; padding: 0; list-style: none; }
   transition: color 0.15s;
 }
 
+/* Homepage browse grids (conditions-style link panels) */
+.pub-browse-block {
+  padding: 28px 0 8px;
+}
+.pub-browse-block + .pub-browse-block {
+  padding-top: 8px;
+}
+.pub-browse__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--pub-border);
+}
+.pub-browse__title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #1e3a5f;
+  text-transform: uppercase;
+}
+.pub-browse__viewall {
+  flex-shrink: 0;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--pub-accent);
+  border-bottom: 3px solid var(--pub-accent);
+  padding-bottom: 2px;
+  line-height: 1.2;
+}
+.pub-browse__viewall:hover { opacity: 1; }
+.pub-browse__panel {
+  background: #eef4fb;
+  border-radius: var(--pub-radius-md);
+  padding: 20px 24px;
+  margin-top: 16px;
+}
+.pub-browse__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0 24px;
+}
+@media (min-width: 640px) {
+  .pub-browse__grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 900px) {
+  .pub-browse__grid { grid-template-columns: repeat(4, 1fr); }
+}
+.pub-browse__col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.pub-browse__link {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--pub-ink);
+  line-height: 1.35;
+  border-bottom: 1px solid rgba(30, 58, 95, 0.08);
+}
+.pub-browse__col .pub-browse__link:last-child {
+  border-bottom: none;
+}
+.pub-browse__link:hover {
+  color: var(--pub-accent);
+  opacity: 1;
+}
+.pub-browse__arrow {
+  flex-shrink: 0;
+  color: #1e3a5f;
+  font-weight: 700;
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+.pub-browse__link:hover .pub-browse__arrow { color: var(--pub-accent); }
+
 /* Sections */
 .pub-section { padding: 36px 0; }
 .pub-section--alt { background: var(--pub-surface); }
