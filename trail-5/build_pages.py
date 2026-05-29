@@ -735,7 +735,6 @@ def brand_logo_html() -> str:
     return (
         '<span class="pub-logo__dermat">dermat</span>'
         '<span class="pub-logo__hub">hub</span>'
-        '<span class="pub-logo__tld">.com</span>'
     )
 
 
