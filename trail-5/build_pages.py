@@ -66,6 +66,15 @@ CAT_LABELS = {
     'skincare-brands': 'Skincare Brands',
 }
 
+# Main nav + homepage explore — matches dermat.local top-level categories
+PRIMARY_NAV = [
+    ('Skin Types', '/skin-types-concerns/'),
+    ('Products', '/skincare-products/'),
+    ('Ingredients', '/active-ingredients/'),
+    ('Treatments', '/treatments-procedures/'),
+    ('Body Care', '/body-care/'),
+]
+
 
 @dataclass
 class Article:
@@ -311,6 +320,59 @@ def badge_to_kicker(badge: str) -> str:
     return 'Guide'
 
 
+def parse_hub_page(
+    html_text: str, rel_url: str, images: Optional[ImageRegistry] = None,
+) -> tuple[Category, list[Article]]:
+    title = extract(
+        r'class="arch-hub-hero"[^>]*>[\s\S]*?<h1>([^<]+)</h1>', html_text,
+    ) or extract(r'<title>([^|<]+)', html_text)
+    if not title:
+        title = rel_url.strip('/').split('/')[-1].replace('-', ' ').title()
+    desc = extract(r'class="arch-hub-description">([^<]+)</p>', html_text) or ''
+    hero_bg = re.search(
+        r'class="arch-hub-hero"[^>]*style="[^"]*url\([\'"]?([^\'")\s]+)',
+        html_text,
+    )
+    hero_img = ''
+    if hero_bg and images:
+        hero_img = images.resolve(hero_bg.group(1))
+    cat = Category(
+        title=html.unescape(title.strip()),
+        path=rel_url if rel_url.endswith('/') else rel_url + '/',
+        meta=html.unescape(desc.strip()),
+        image=hero_img,
+    )
+    articles: list[Article] = []
+    for m in re.finditer(
+        r'<a href="([^"]+)" class="arch-hub-article-card">.*?'
+        r'(?:<img[^>]+src="([^"]*)"[^>]*>)?.*?'
+        r'class="arch-hub-article-type">([^<]*)</div>.*?'
+        r'class="arch-hub-article-title">([^<]*)</div>.*?'
+        r'class="arch-hub-article-excerpt">([^<]*)</div>',
+        html_text,
+        re.S,
+    ):
+        path, img, badge, art_title, art_desc = m.groups()
+        articles.append(Article(
+            title=html.unescape(art_title.strip()),
+            desc=html.unescape(art_desc.strip()),
+            path=path if path.startswith('/') else '/' + path,
+            kicker=badge_to_kicker(badge),
+            image=images.resolve(img or '') if images else (img or ''),
+            cat=rel_url.strip('/').split('/')[0] if rel_url else 'general',
+        ))
+    return cat, articles
+
+
+def nav_is_active(active: str, href: str) -> bool:
+    if not active or active in ('/', ''):
+        return False
+    if active == href:
+        return True
+    prefix = href.rstrip('/') + '/'
+    return active.startswith(prefix)
+
+
 def parse_categories(html_text: str, images: Optional[ImageRegistry] = None) -> list[Category]:
     cats = []
     for m in re.finditer(
@@ -447,8 +509,8 @@ def head_block(title: str, desc: str) -> str:
 def shell_header(site: SiteData, active: str = '') -> str:
     brand = brand_slug(site.name)
     cat_nav = ''.join(
-        f'<a class="pub-nav__link{" is-active" if active and h == active else ""}" href="{html.escape(u(h))}">{html.escape(lbl)}</a>'
-        for lbl, h in site.nav[:6]
+        f'<a class="pub-nav__link{" is-active" if nav_is_active(active, h) else ""}" href="{html.escape(u(h))}">{html.escape(lbl)}</a>'
+        for lbl, h in PRIMARY_NAV
     )
     home_active = ' is-active' if active in ('/', '') else ''
     return f"""
@@ -645,29 +707,44 @@ def render_homepage(site: SiteData) -> str:
     if not cat_groups:
         cat_groups = {'skin-care': arts}
 
+    cat_by_path = {c.path: c for c in (site.categories or [])}
     idx = 0
     extra = ''
-    for cat_slug, group in list(cat_groups.items())[:6]:
-        label = CAT_LABELS.get(cat_slug, cat_slug.replace('-', ' ').title())
-        hub = f'/{cat_slug}/' if cat_slug else '/'
-        rails += category_rail(label, group[:8], idx, hub)
+    for nav_label, hub_path in PRIMARY_NAV:
+        cat_slug = hub_path.strip('/').split('/')[0]
+        group = cat_groups.get(cat_slug, [])
+        if not group:
+            continue
+        rails += category_rail(nav_label, group[:8], idx, hub_path)
         if idx == 1:
-            explore = site.categories or [Category(c.title, c.path) for c in []]
-            if site.categories:
-                cards = ''.join(
-                    f'<a href="{html.escape(u(c.path))}" class="pub-explore__card">'
-                    f'<img src="{html.escape(c.image or img_for_index(i))}" alt="">'
-                    f'<span class="pub-explore__label">{html.escape(c.title)}</span></a>'
-                    for i, c in enumerate(site.categories[:8])
-                )
-                extra += f'<section class="pub-section"><div class="pub-container"><h2 class="pub-section__title">Explore Topics</h2>'
-                extra += f'<div class="pub-explore__track">{cards}</div></div></section>'
+            cards = ''.join(
+                f'<a href="{html.escape(u(path))}" class="pub-explore__card">'
+                f'<img src="{html.escape(u(cat_by_path[path].image) if path in cat_by_path and cat_by_path[path].image else img_for_index(i))}" alt="">'
+                f'<span class="pub-explore__label">{html.escape(lbl)}</span></a>'
+                for i, (lbl, path) in enumerate(PRIMARY_NAV)
+            )
+            extra += (
+                '<section class="pub-section"><div class="pub-container">'
+                '<h2 class="pub-section__title">Explore Topics</h2>'
+                f'<div class="pub-explore__track">{cards}</div></div></section>'
+            )
         if idx == 3:
             spec = ''.join(card_featured(a, i) for i, a in enumerate(arts[12:15]))
-            extra += f'<div class="pub-container"><div class="pub-special"><h2 class="pub-section__title">Special Features</h2><div class="pub-special__grid">{spec}</div></div></div>'
+            extra += (
+                '<div class="pub-container"><div class="pub-special">'
+                '<h2 class="pub-section__title">Special Features</h2>'
+                f'<div class="pub-special__grid">{spec}</div></div></div>'
+            )
         if idx == 4:
-            tags = ''.join(f'<a href="{html.escape(u(c.path))}" class="pub-tag">{html.escape(c.title)}</a>' for c in (site.categories or [])[:12])
-            extra += f'<section class="pub-section pub-section--alt"><div class="pub-container"><h2 class="pub-section__title">Trending Topics</h2><div class="pub-tags">{tags}</div></div></section>'
+            tags = ''.join(
+                f'<a href="{html.escape(u(path))}" class="pub-tag">{html.escape(lbl)}</a>'
+                for lbl, path in PRIMARY_NAV
+            )
+            extra += (
+                '<section class="pub-section pub-section--alt"><div class="pub-container">'
+                '<h2 class="pub-section__title">Trending Topics</h2>'
+                f'<div class="pub-tags">{tags}</div></div></section>'
+            )
         rails += extra
         extra = ''
         idx += 1
@@ -710,13 +787,17 @@ def render_homepage(site: SiteData) -> str:
 
 
 def render_category_hub(site: SiteData, cat: Category, articles: list[Article]) -> str:
-    pills = ''.join(f'<a href="#section-{slugify(c.title)}" class="pub-topic-pill">{html.escape(c.title)}</a>' for c in site.categories[:10])
-    sections = ''
+    cat_depth = len(cat.path.strip('/').split('/'))
     groups: dict[str, list[Article]] = {}
     for a in articles:
         sub = a.path.strip('/').split('/')
-        key = sub[1] if len(sub) > 1 else 'featured'
+        key = sub[cat_depth] if len(sub) > cat_depth else 'featured'
         groups.setdefault(key, []).append(a)
+    pills = ''.join(
+        f'<a href="#section-{slugify(key)}" class="pub-topic-pill">{html.escape(key.replace("-", " ").title())}</a>'
+        for key in groups
+    )
+    sections = ''
     for i, (key, group) in enumerate(groups.items()):
         rev = ' pub-rail--reverse' if i % 2 else ''
         sections += f'<section class="pub-hub-section{rev}" id="section-{slugify(key)}"><h2 class="pub-section__title">{html.escape(key.replace("-", " ").title())}</h2>{rail_spotlight(group[:6], i%2==1)}{rail_mosaic(group[6:12])}</section>'
@@ -857,7 +938,7 @@ def scan_site(raw_dir: Path, images: Optional[ImageRegistry] = None) -> SiteData
     if home_html:
         site.name = extract(r'class="arch-nav-brand"[^>]*>([^<]+)</a>', home_html) or extract(r'<title>([^|<]+)', home_html) or site.name
         site.tagline = extract(r'class="arch-footer-tagline">([^<]+)</p>', home_html) or site.tagline
-        site.nav = parse_nav(home_html)
+        site.nav = PRIMARY_NAV
         site.footer_cols = parse_footer(home_html)
         site.categories = parse_categories(home_html, images)
         for a in parse_feed_cards(home_html, images):
@@ -921,12 +1002,39 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
     for a in site.articles:
         cat_articles.setdefault(a.cat, []).append(a)
 
+    top_category_paths = {c.path for c in site.categories}
+
     for cat in site.categories:
         slug = cat.path.strip('/').split('/')[0]
         arts = cat_articles.get(slug, [x for x in site.articles if x.path.startswith(cat.path)][:20])
         out_path = out_dir / cat.path.strip('/')
         out_path.mkdir(parents=True, exist_ok=True)
-        (out_path / 'index.html').write_text(render_category_hub(site, cat, arts or site.articles[:12]), encoding='utf-8')
+        (out_path / 'index.html').write_text(
+            render_category_hub(site, cat, arts or site.articles[:12]),
+            encoding='utf-8',
+        )
+
+    # Sub-category hub pages (e.g. /skin-types-concerns/dry-skin/, /skin-conditions/acne/)
+    for fp in raw_dir.rglob('index.html'):
+        parent_rel = fp.parent.relative_to(raw_dir)
+        if str(parent_rel) == '.':
+            continue
+        rel = '/' + str(parent_rel).replace('\\', '/') + '/'
+        if rel in top_category_paths or rel in bodies:
+            continue
+        text = fp.read_text(encoding='utf-8', errors='replace')
+        if 'arch-hub-page' not in text:
+            continue
+        sub_cat, sub_arts = parse_hub_page(text, rel, images)
+        if not sub_arts:
+            sub_arts = [x for x in site.articles if x.path.startswith(rel)]
+        parts = rel.strip('/').split('/')
+        out_path = out_dir.joinpath(*parts)
+        out_path.mkdir(parents=True, exist_ok=True)
+        (out_path / 'index.html').write_text(
+            render_category_hub(site, sub_cat, sub_arts or site.articles[:6]),
+            encoding='utf-8',
+        )
 
     # Articles
     for rel, art in {a.path: a for a in site.articles}.items():
@@ -947,7 +1055,9 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
         if rel in ('/', '/.') or rel.endswith('//'):
             continue
         rel = rel if rel.endswith('/') else rel + '/'
-        if rel in bodies or any(rel.startswith(c.path) for c in site.categories):
+        if rel in bodies or rel in top_category_paths:
+            continue
+        if (out_dir / rel.strip('/')).exists():
             continue
         text = fp.read_text(encoding='utf-8', errors='replace')
         if 'arch-article-body' not in text and 'archetype-main' not in text:
