@@ -69,9 +69,9 @@
     });
   });
 
-  /* Trending strip horizontal scroll with wheel */
-  const trending = document.querySelector('.pub-trending__track');
-  if (trending) {
+  /* Trending marquee — CSS animation handles scroll; wheel optional for reduced-motion */
+  const trending = document.querySelector('.pub-trending__marquee');
+  if (trending && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     trending.addEventListener('wheel', (e) => {
       if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
         trending.scrollLeft += e.deltaY;

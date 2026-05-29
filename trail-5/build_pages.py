@@ -806,15 +806,20 @@ def shell_footer(site: SiteData) -> str:
 
 
 def trending_strip(articles: list[Article]) -> str:
-    parts = [
+    items = ''.join(
         f'<a href="{html.escape(u(a.path))}">{html.escape(a.title)}</a>'
-        for a in articles[:8]
-    ]
-    links = '<span class="pub-trending__sep">|</span>'.join(parts)
+        f'<span class="pub-trending__dot" aria-hidden="true">•</span>'
+        for a in articles[:12]
+    )
     return f"""
 <section class="pub-trending"><div class="pub-container pub-trending__inner">
-  <span class="pub-pill">Trending Now</span>
-  <div class="pub-trending__track">{links}</div>
+  <span class="pub-trending__label">Trending Now</span>
+  <div class="pub-trending__viewport">
+    <div class="pub-trending__marquee">
+      <div class="pub-trending__content">{items}</div>
+      <div class="pub-trending__content" aria-hidden="true">{items}</div>
+    </div>
+  </div>
 </div></section>"""
 
 
