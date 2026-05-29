@@ -139,7 +139,7 @@ class ImageRegistry:
                 dest = self.media_dir / basename
                 if not dest.exists():
                     shutil.copy(src, dest)
-                return u(f'/assets/media/{basename}')
+                return f'/assets/media/{basename}'
 
         ext = Path(parsed).suffix.lower()
         if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
@@ -150,7 +150,7 @@ class ImageRegistry:
             fetched = self._try_download(url, dest) if self.fetch_remote else False
             if not fetched:
                 self._copy_placeholder(dest)
-        return u(f'/assets/media/{name}')
+        return f'/assets/media/{name}'
 
     def _try_download(self, url: str, dest: Path) -> bool:
         candidates = [url]
@@ -419,9 +419,15 @@ def extract_related(html_text: str, images: Optional[ImageRegistry] = None) -> l
     return items[:6]
 
 
+def brand_slug(name: str) -> str:
+    n = name.lower().strip()
+    return 'dermat' if 'dermat' in n else n.split()[0][:10]
+
+
 def img_for_index(i: int, article_img: str = '') -> str:
     if article_img:
-        return u(article_img) if article_img.startswith('/') else u(f'/{article_img}')
+        path = article_img if article_img.startswith('/') else f'/{article_img}'
+        return u(path)
     return u(f'/assets/{ASSET_IMAGES[i % len(ASSET_IMAGES)]}')
 
 
@@ -439,10 +445,12 @@ def head_block(title: str, desc: str) -> str:
 
 
 def shell_header(site: SiteData, active: str = '') -> str:
-    nav_links = ''.join(
+    brand = brand_slug(site.name)
+    cat_nav = ''.join(
         f'<a class="pub-nav__link{" is-active" if active and h == active else ""}" href="{html.escape(u(h))}">{html.escape(lbl)}</a>'
-        for lbl, h in site.nav[:8]
+        for lbl, h in site.nav[:6]
     )
+    home_active = ' is-active' if active in ('/', '') else ''
     return f"""
 <body class="pub-site">
 <div class="pub-progress" id="pub-progress"></div>
@@ -450,9 +458,10 @@ def shell_header(site: SiteData, active: str = '') -> str:
 <header class="pub-header">
   <div class="pub-container">
     <div class="pub-header__top">
-      <a class="pub-logo" href="{u('/')}">{html.escape(site.name.lower())}</a>
+      <a class="pub-logo" href="{u('/')}">{html.escape(brand)}</a>
       <div class="pub-header__actions">
         <input type="search" class="pub-search" placeholder="Search topics…" aria-label="Search">
+        <a class="pub-sign-in" href="{u('/contact/')}">Sign in</a>
         <button class="pub-btn pub-btn--primary" type="button">Subscribe</button>
         <button class="pub-nav-toggle" type="button" data-pub-nav-toggle aria-expanded="false" aria-label="Menu">
           <span></span><span></span><span></span>
@@ -460,7 +469,10 @@ def shell_header(site: SiteData, active: str = '') -> str:
       </div>
     </div>
     <nav class="pub-nav" aria-label="Main">
-      <div class="pub-nav__inner">{nav_links}</div>
+      <div class="pub-nav__inner">
+        <a class="pub-nav__link{home_active}" href="{u('/')}">Home</a>
+        {cat_nav}
+      </div>
     </nav>
   </div>
 </header>"""
@@ -475,7 +487,7 @@ def shell_footer(site: SiteData) -> str:
 <footer class="pub-footer">
   <div class="pub-container pub-footer__grid">
     <div class="pub-footer__brand">
-      <span class="pub-logo">{html.escape(site.name.lower())}</span>
+      <span class="pub-logo">{html.escape(brand_slug(site.name))}</span>
       <p class="pub-footer__tagline">{html.escape(site.tagline)}</p>
     </div>
     {cols}
@@ -497,10 +509,11 @@ def shell_footer(site: SiteData) -> str:
 
 
 def trending_strip(articles: list[Article]) -> str:
-    links = ''.join(
+    parts = [
         f'<a href="{html.escape(u(a.path))}">{html.escape(a.title)}</a>'
         for a in articles[:8]
-    )
+    ]
+    links = '<span class="pub-trending__sep">|</span>'.join(parts)
     return f"""
 <section class="pub-trending"><div class="pub-container pub-trending__inner">
   <span class="pub-pill">Trending Now</span>
@@ -530,11 +543,18 @@ def card_compact(a: Article, i: int) -> str:
 </a>"""
 
 
-def card_tile(a: Article, i: int) -> str:
+def card_tile(a: Article, i: int, *, hero: bool = False) -> str:
     img = img_for_index(i, a.image)
-    return f"""<a href="{html.escape(u(a.path))}" class="pub-card pub-card--tile">
+    body = f'<h4 class="pub-card__title">{html.escape(a.title)}</h4>'
+    if hero:
+        body = (
+            f'<span class="pub-card__kicker">{html.escape(a.kicker)}</span>'
+            f'<h4 class="pub-card__title">{html.escape(a.title)}</h4>'
+            f'<div class="pub-card__meta">{html.escape(a.time)} · {html.escape(a.author)}</div>'
+        )
+    return f"""<a href="{html.escape(u(a.path))}" class="pub-card pub-card--tile{" pub-card--tile-hero" if hero else ""}">
   <img class="pub-card__img" src="{html.escape(img)}" alt="" loading="lazy">
-  <div class="pub-card__body"><h4 class="pub-card__title">{html.escape(a.title)}</h4></div>
+  <div class="pub-card__body">{body}</div>
 </a>"""
 
 
@@ -603,12 +623,13 @@ def render_homepage(site: SiteData) -> str:
   <a href="{html.escape(u(lead.path))}" class="pub-hero__lead">
     <img src="{html.escape(img_for_index(0, lead.image))}" alt="">
     <div class="pub-hero__lead-overlay">
-      <div class="pub-hero__kicker">{html.escape(lead.kicker)}</div>
+      <span class="pub-hero__kicker">Featured · {html.escape(lead.kicker)}</span>
       <h2>{html.escape(lead.title)}</h2>
       <p>{html.escape(lead.desc[:120])}</p>
+      <div class="pub-hero__meta">{html.escape(lead.time)} · {html.escape(lead.author)}</div>
     </div>
   </a>
-  <div class="pub-hero__side">{''.join(card_tile(a, i+1) for i, a in enumerate(side))}</div>
+  <div class="pub-hero__side">{''.join(card_tile(a, i+1, hero=True) for i, a in enumerate(side))}</div>
 </div></section>"""
 
     quick = ''.join(
