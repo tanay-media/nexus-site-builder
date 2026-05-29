@@ -26,7 +26,7 @@ from typing import Optional
 
 TRAIL_DIR = Path(__file__).resolve().parent
 BASE_URL = ''  # e.g. /nexus-site-builder for GitHub project Pages
-THEME_VERSION = '20260529e'  # bump when pub.css/pub.js change (cache bust)
+THEME_VERSION = '20260529f'  # bump when pub.css/pub.js change (cache bust)
 
 ASSET_IMAGES = [
     "hero-wellness.jpg", "home-featured.jpg", "beauty-face.jpg", "skincare-products.jpg",
@@ -1220,24 +1220,28 @@ def render_homepage(site: SiteData, hub_by_path: Optional[dict[str, HubPage]] = 
     cat_by_path = {c.path: c for c in (site.categories or [])}
     idx = 0
     extra = ''
+    pre_atoz = ''
+    rails = ''
     for nav_label, hub_path in PRIMARY_NAV:
         cat_slug = hub_path.strip('/').split('/')[0]
         group = cat_groups.get(cat_slug, [])
         if not group:
             continue
-        rails += category_rail(nav_label, group[:8], idx, hub_path)
+        rail_html = category_rail(nav_label, group[:8], idx, hub_path)
         if idx == 1:
-            cards = ''.join(
+            explore = ''.join(
                 f'<a href="{html.escape(u(path))}" class="pub-explore__card">'
                 f'<img src="{html.escape(u(cat_by_path[path].image) if path in cat_by_path and cat_by_path[path].image else img_for_index(i))}" alt="">'
                 f'<span class="pub-explore__label">{html.escape(lbl)}</span></a>'
                 for i, (lbl, path) in enumerate(PRIMARY_NAV)
             )
-            extra += (
+            pre_atoz += rail_html + (
                 '<section class="pub-section"><div class="pub-container">'
                 '<h2 class="pub-section__title">Explore Topics</h2>'
-                f'<div class="pub-explore__track">{cards}</div></div></section>'
+                f'<div class="pub-explore__track">{explore}</div></div></section>'
             )
+        else:
+            rails += rail_html
         if idx == 3:
             spec = ''.join(card_featured(a, i) for i, a in enumerate(arts[12:15]))
             extra += (
@@ -1286,6 +1290,7 @@ def render_homepage(site: SiteData, hub_by_path: Optional[dict[str, HubPage]] = 
         + hero
         + f'<section class="pub-quick-hits"><div class="pub-container pub-quick-hits__grid">{quick}</div></section>'
         + browse
+        + pre_atoz
         + atoz
         + render_video_spotlight(site)
         + rails
