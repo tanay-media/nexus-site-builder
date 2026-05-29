@@ -68,6 +68,7 @@ CAT_LABELS = {
 
 # Main nav + homepage explore — matches dermat.local top-level categories
 PRIMARY_NAV = [
+    ('Skin Conditions', '/skin-conditions/'),
     ('Skin Types', '/skin-types-concerns/'),
     ('Products', '/skincare-products/'),
     ('Ingredients', '/active-ingredients/'),
@@ -82,6 +83,44 @@ BROWSE_SECTIONS = [
     ('Products', '/skincare-products/'),
     ('Treatments & Procedures', '/treatments-procedures/'),
 ]
+
+# Homepage video fold + article hero embeds (AAD public YouTube)
+@dataclass(frozen=True)
+class VideoSpotlight:
+    article_path: str
+    youtube_id: str
+    label: str = ''
+
+
+VIDEO_SPOTLIGHT: tuple[VideoSpotlight, ...] = (
+    VideoSpotlight(
+        '/skin-conditions/when-see-dermatologist/',
+        '0Cf2zf7dz7c',
+        'How to Find a Dermatologist Who Listens',
+    ),
+    VideoSpotlight(
+        '/skin-conditions/eczema-dermatitis/atopic-dermatitis/',
+        'T_HbQo5oWak',
+        'Eczema-Friendly Skin Care Tips',
+    ),
+    VideoSpotlight(
+        '/skin-conditions/acne/best-acne-products/',
+        'GSH415m3W3s',
+        'At-Home Acne Tips From Dermatologists',
+    ),
+    VideoSpotlight(
+        '/skin-types-concerns/determine-skin-type/',
+        's-26VmKhGHM',
+        '5 Dermatologist Tips for Healthy Skin',
+    ),
+    VideoSpotlight(
+        '/active-ingredients/retinol-vs-tretinoin/',
+        'A-Dzt7-oF98',
+        'The #1 Anti-Aging Ingredient',
+    ),
+)
+
+VIDEO_BY_PATH: dict[str, str] = {v.article_path: v.youtube_id for v in VIDEO_SPOTLIGHT}
 
 REVIEWERS = [
     {'name': 'Dr. Sarah Chen', 'cred': 'Board-Certified Dermatologist', 'img': 'expert-1.jpg'},
@@ -858,6 +897,30 @@ def collect_browse_links(
     return links[:limit]
 
 
+def collect_atoz_links(
+    hub_by_path: dict[str, HubPage], articles: list[Article],
+) -> list[tuple[str, str]]:
+    """All hub topics + articles with content, sorted A–Z."""
+    links: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(title: str, path: str) -> None:
+        if not title.strip() or path in seen:
+            return
+        seen.add(path)
+        links.append((title.strip(), path if path.endswith('/') else path + '/'))
+
+    hub_paths = set(hub_by_path.keys())
+    for hub in hub_by_path.values():
+        add(hub.cat.title, hub.cat.path)
+    for art in articles:
+        if art.path not in hub_paths:
+            add(art.title, art.path)
+
+    links.sort(key=lambda x: x[0].lower())
+    return links
+
+
 def browse_grid_html(links: list[tuple[str, str]]) -> str:
     if not links:
         return ''
@@ -878,6 +941,74 @@ def browse_grid_html(links: list[tuple[str, str]]) -> str:
     return ''.join(cols)
 
 
+def youtube_thumb_url(video_id: str) -> str:
+    return f'https://img.youtube.com/vi/{video_id}/hqdefault.jpg'
+
+
+def youtube_embed_html(video_id: str, title: str) -> str:
+    return (
+        f'<figure class="pub-article-hero pub-video-embed">'
+        f'<iframe src="https://www.youtube-nocookie.com/embed/{html.escape(video_id)}?rel=0"'
+        f' title="{html.escape(title)}"'
+        f' allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"'
+        f' allowfullscreen loading="lazy"></iframe></figure>'
+    )
+
+
+def video_play_icon() -> str:
+    return (
+        '<span class="pub-video-play" aria-hidden="true">'
+        '<svg viewBox="0 0 24 24" width="12" height="12" focusable="false">'
+        '<path fill="currentColor" d="M8 5v14l11-7z"/></svg></span>'
+    )
+
+
+def video_spotlight_title(entry: VideoSpotlight, articles_by_path: dict[str, Article]) -> str:
+    if entry.label:
+        return entry.label
+    art = articles_by_path.get(entry.article_path)
+    return art.title if art else entry.article_path.strip('/').split('/')[-1].replace('-', ' ').title()
+
+
+def render_video_spotlight(site: SiteData) -> str:
+    if not VIDEO_SPOTLIGHT:
+        return ''
+    articles_by_path = {a.path: a for a in site.articles}
+    featured, *rest = VIDEO_SPOTLIGHT
+    feat_title = video_spotlight_title(featured, articles_by_path)
+    feat_href = html.escape(u(featured.article_path))
+    feat_thumb = html.escape(youtube_thumb_url(featured.youtube_id))
+    featured_html = f"""<a href="{feat_href}" class="pub-video-spotlight__featured">
+  <div class="pub-video-spotlight__thumb pub-video-spotlight__thumb--lg">
+    <img src="{feat_thumb}" alt="" loading="lazy">{video_play_icon()}
+  </div>
+  <h3 class="pub-video-spotlight__feat-title">{html.escape(feat_title)}</h3>
+</a>"""
+    list_html = ''
+    for entry in rest[:4]:
+        title = video_spotlight_title(entry, articles_by_path)
+        href = html.escape(u(entry.article_path))
+        thumb = html.escape(youtube_thumb_url(entry.youtube_id))
+        list_html += f"""<a href="{href}" class="pub-video-spotlight__item">
+  <div class="pub-video-spotlight__thumb">
+    <img src="{thumb}" alt="" loading="lazy">{video_play_icon()}
+  </div>
+  <span class="pub-video-spotlight__item-title">{html.escape(title)}</span>
+</a>"""
+    return f"""<section class="pub-video-spotlight">
+  <div class="pub-container">
+    <div class="pub-video-spotlight__header">
+      <h2 class="pub-video-spotlight__heading">Video Spotlight</h2>
+      <a class="pub-video-spotlight__viewall" href="{html.escape(u('/skin-conditions/'))}">View All</a>
+    </div>
+    <div class="pub-video-spotlight__grid">
+      {featured_html}
+      <div class="pub-video-spotlight__list">{list_html}</div>
+    </div>
+  </div>
+</section>"""
+
+
 def render_browse_sections(site: SiteData, hub_by_path: dict[str, HubPage]) -> str:
     blocks: list[str] = []
     for title, hub_path in BROWSE_SECTIONS:
@@ -896,6 +1027,22 @@ def render_browse_sections(site: SiteData, hub_by_path: dict[str, HubPage]) -> s
             f'</div></section>'
         )
     return ''.join(blocks)
+
+
+def render_dermat_atoz(site: SiteData, hub_by_path: dict[str, HubPage]) -> str:
+    links = collect_atoz_links(hub_by_path, site.articles)
+    if not links:
+        return ''
+    grid = browse_grid_html(links)
+    return (
+        f'<section class="pub-browse-block pub-atoz-block"><div class="pub-container">'
+        f'<div class="pub-browse__header">'
+        f'<h2 class="pub-browse__title">Dermat A - Z</h2>'
+        f'<a class="pub-browse__viewall" href="{html.escape(u("/skin-conditions/"))}">View All</a>'
+        f'</div>'
+        f'<div class="pub-browse__panel"><div class="pub-browse__grid">{grid}</div></div>'
+        f'</div></section>'
+    )
 
 
 def card_featured(a: Article, i: int) -> str:
@@ -1082,6 +1229,7 @@ def render_homepage(site: SiteData, hub_by_path: Optional[dict[str, HubPage]] = 
     )
 
     browse = render_browse_sections(site, hub_by_path or {}) if hub_by_path else ''
+    atoz = render_dermat_atoz(site, hub_by_path or {}) if hub_by_path else ''
 
     return (
         head_block(f'{site.name} — Health & Wellness', site.tagline)
@@ -1090,6 +1238,8 @@ def render_homepage(site: SiteData, hub_by_path: Optional[dict[str, HubPage]] = 
         + hero
         + f'<section class="pub-quick-hits"><div class="pub-container pub-quick-hits__grid">{quick}</div></section>'
         + browse
+        + atoz
+        + render_video_spotlight(site)
         + rails
         + f'<section class="pub-container"><div class="pub-editors"><h2 class="pub-section__title">Editor\'s Picks</h2><div class="pub-editors__grid">{editors}</div></div></section>'
         + f'<section class="pub-section"><div class="pub-container pub-ranked"><div class="pub-ranked__col"><h3>Most Read</h3>{ranked_l}</div><div class="pub-ranked__col"><h3>Latest</h3>{ranked_r}</div></div></section>'
@@ -1276,7 +1426,7 @@ def render_article(site: SiteData, article: Article, body: str, toc: list[tuple[
           </div>
           {takeaways}
         </header>
-        {f'<figure class="pub-article-hero"><img src="{html.escape(u(article.image) if article.image.startswith("/") else img_for_index(0, article.image))}" alt="{html.escape(article.title)}" loading="eager"></figure>' if article.image else ''}
+        {youtube_embed_html(VIDEO_BY_PATH[article.path], article.title) if article.path in VIDEO_BY_PATH else (f'<figure class="pub-article-hero"><img src="{html.escape(u(article.image) if article.image.startswith("/") else img_for_index(0, article.image))}" alt="{html.escape(article.title)}" loading="eager"></figure>' if article.image else '')}
         <div class="pub-share">
           <button type="button" data-pub-copy-link>Copy link</button>
         </div>
