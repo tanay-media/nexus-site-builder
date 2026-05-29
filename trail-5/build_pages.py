@@ -112,6 +112,8 @@ class HubTopic:
     path: str
     desc: str = ''
     icon: str = ''
+    image: str = ''
+    articles: list[Article] = field(default_factory=list)
 
 
 @dataclass
@@ -357,6 +359,29 @@ def apply_reviewers(articles: list[Article]) -> None:
         a.author = r['name']
         a.author_cred = r['cred']
         a.author_img = r['img']
+
+
+def articles_under(prefix: str, articles: list[Article]) -> list[Article]:
+    return [a for a in articles if a.path.startswith(prefix) and a.path != prefix]
+
+
+def enrich_hub(hub: HubPage, site: SiteData, hub_by_path: dict[str, HubPage]) -> None:
+    for topic in hub.topics:
+        sub = hub_by_path.get(topic.path)
+        if sub and sub.cat.image:
+            topic.image = sub.cat.image
+        topic.articles = articles_under(topic.path, site.articles)
+        if not topic.image and topic.articles:
+            topic.image = topic.articles[0].image
+        if not topic.image and sub:
+            for nested in sub.topics:
+                if nested.image:
+                    topic.image = nested.image
+                    break
+
+
+def hub_topic_slug(topic: HubTopic) -> str:
+    return slugify(topic.path.strip('/').split('/')[-1])
 
 
 def direct_child_articles(hub_path: str, articles: list[Article]) -> list[Article]:
@@ -902,16 +927,23 @@ def hub_breadcrumb_html(crumbs: list[tuple[str, str]], fallback_title: str) -> s
     return ''.join(parts)
 
 
-def hub_topic_card(topic: HubTopic) -> str:
-    icon = topic.icon or (topic.title[0] if topic.title else '?')
-    return f"""<a href="{html.escape(u(topic.path))}" class="pub-hub-topic">
-  <div class="pub-hub-topic__icon">{html.escape(icon)}</div>
-  <div class="pub-hub-topic__body">
-    <h3>{html.escape(topic.title)}</h3>
-    <p>{html.escape(topic.desc)}</p>
-  </div>
-  <span class="pub-hub-topic__cta">Explore →</span>
-</a>"""
+def hub_topic_section(topic: HubTopic, idx: int) -> str:
+    img = u(topic.image) if topic.image else img_for_index(idx)
+    art_cards = ''.join(hub_article_card(a, i) for i, a in enumerate(topic.articles[:6]))
+    arts_block = ''
+    if art_cards:
+        arts_block = f'<div class="pub-hub-topic-articles">{art_cards}</div>'
+    return f"""<section class="pub-hub-topic-block" id="topic-{hub_topic_slug(topic)}">
+  <a href="{html.escape(u(topic.path))}" class="pub-hub-topic-banner">
+    <img class="pub-hub-topic-banner__img" src="{html.escape(img)}" alt="" loading="lazy">
+    <div class="pub-hub-topic-banner__overlay">
+      <h3>{html.escape(topic.title)}</h3>
+      <p>{html.escape(topic.desc)}</p>
+      <span class="pub-hub-topic-banner__cta">View all →</span>
+    </div>
+  </a>
+  {arts_block}
+</section>"""
 
 
 def hub_article_card(a: Article, i: int) -> str:
@@ -931,17 +963,16 @@ def hub_article_card(a: Article, i: int) -> str:
 def render_category_hub(site: SiteData, hub: HubPage) -> str:
     cat = hub.cat
     pills = ''.join(
-        f'<a href="{html.escape(u(t.path))}" class="pub-topic-pill">{html.escape(t.title)}</a>'
+        f'<a href="#topic-{hub_topic_slug(t)}" class="pub-topic-pill">{html.escape(t.title)}</a>'
         for t in hub.topics
     )
     main_parts: list[str] = []
     if hub.intro:
         main_parts.append(f'<div class="pub-hub-intro pub-prose">{hub.intro}</div>')
     if hub.topics:
-        topic_cards = ''.join(hub_topic_card(t) for t in hub.topics)
+        topic_sections = ''.join(hub_topic_section(t, i) for i, t in enumerate(hub.topics))
         main_parts.append(
-            f'<section class="pub-hub-topics"><h2 class="pub-section__title">Explore Topics</h2>'
-            f'<div class="pub-hub-topic-grid">{topic_cards}</div></section>'
+            f'<div class="pub-hub-topic-stack">{topic_sections}</div>'
         )
     if hub.articles:
         art_cards = ''.join(hub_article_card(a, i) for i, a in enumerate(hub.articles))
@@ -951,13 +982,16 @@ def render_category_hub(site: SiteData, hub: HubPage) -> str:
         )
     main_html = ''.join(main_parts) or '<p class="pub-hub-empty">More guides coming soon.</p>'
 
+    popular_arts: list[Article] = list(hub.articles)
+    for t in hub.topics:
+        popular_arts.extend(t.articles)
     popular = ''.join(
         f'<a href="{html.escape(u(a.path))}">{html.escape(a.title)}</a>'
-        for a in hub.articles[:8]
+        for a in popular_arts[:8]
     )
     crumb_html = hub_breadcrumb_html(hub.breadcrumbs, cat.title)
     topic_count = len(hub.topics)
-    art_count = len(hub.articles)
+    art_count = len(popular_arts)
     meta_bits = []
     if topic_count:
         meta_bits.append(f'{topic_count} topic{"s" if topic_count != 1 else ""}')
@@ -965,9 +999,18 @@ def render_category_hub(site: SiteData, hub: HubPage) -> str:
         meta_bits.append(f'{art_count} article{"s" if art_count != 1 else ""}')
     meta_line = ' · '.join(meta_bits) if meta_bits else cat.meta
 
+    hero_img = u(cat.image) if cat.image else ''
+    hero_banner = ''
+    if hero_img:
+        hero_banner = f"""<div class="pub-hub-hero-banner">
+      <img src="{html.escape(hero_img)}" alt="">
+      <div class="pub-hub-hero-banner__overlay"></div>
+    </div>"""
+
     return (
         head_block(f'{cat.title} | {site.name}', cat.meta or f'Expert guides on {cat.title.lower()}.')
         + shell_header(site, cat.path)
+        + hero_banner
         + f"""<div class="pub-container pub-hub-hero">
       <nav class="pub-breadcrumb">{crumb_html}</nav>
       <h1>{html.escape(cat.title)}</h1>
@@ -1167,6 +1210,7 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
         cat_articles.setdefault(a.cat, []).append(a)
 
     top_category_paths = {c.path for c in site.categories}
+    hub_by_path: dict[str, HubPage] = {}
 
     for cat in site.categories:
         raw_fp = raw_dir / cat.path.strip('/') / 'index.html'
@@ -1178,11 +1222,8 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
             slug = cat.path.strip('/').split('/')[0]
             arts = cat_articles.get(slug, [x for x in site.articles if x.path.startswith(cat.path)])
             hub = HubPage(cat=cat, articles=arts[:20])
-        out_path = out_dir / cat.path.strip('/')
-        out_path.mkdir(parents=True, exist_ok=True)
-        (out_path / 'index.html').write_text(render_category_hub(site, hub), encoding='utf-8')
+        hub_by_path[cat.path] = hub
 
-    # Sub-category hub pages (e.g. /skin-types-concerns/dry-skin/, /skin-conditions/acne/)
     for fp in raw_dir.rglob('index.html'):
         parent_rel = fp.parent.relative_to(raw_dir)
         if str(parent_rel) == '.':
@@ -1197,8 +1238,14 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
         if not hub.articles:
             hub.articles = direct_child_articles(rel, site.articles)
             apply_reviewers(hub.articles)
+        hub_by_path[rel] = hub
+
+    for rel in sorted(hub_by_path.keys(), key=lambda p: p.count('/'), reverse=True):
+        enrich_hub(hub_by_path[rel], site, hub_by_path)
+
+    for rel, hub in hub_by_path.items():
         parts = rel.strip('/').split('/')
-        out_path = out_dir.joinpath(*parts)
+        out_path = out_dir.joinpath(*parts) if parts != [''] else out_dir
         out_path.mkdir(parents=True, exist_ok=True)
         (out_path / 'index.html').write_text(render_category_hub(site, hub), encoding='utf-8')
 
