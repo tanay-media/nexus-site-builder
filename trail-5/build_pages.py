@@ -317,6 +317,7 @@ class SiteData:
     name: str = 'Health'
     tagline: str = 'Expert health guidance, reviewed by specialists'
     nav: list[tuple[str, str]] = field(default_factory=list)
+    nav_menus: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
     footer_cols: list[tuple[str, list[tuple[str, str]]]] = field(default_factory=list)
     articles: list[Article] = field(default_factory=list)
     categories: list[Category] = field(default_factory=list)
@@ -797,11 +798,11 @@ def head_block(title: str, desc: str) -> str:
 
 
 def shell_header(site: SiteData, active: str = '') -> str:
+    home_active = ' is-active' if active in ('/', '') else ''
     cat_nav = ''.join(
-        f'<a class="pub-nav__link{" is-active" if nav_is_active(active, h) else ""}" href="{html.escape(u(h))}">{html.escape(lbl)}</a>'
+        nav_dropdown_item(lbl, h, site.nav_menus.get(h, []), active)
         for lbl, h in PRIMARY_NAV
     )
-    home_active = ' is-active' if active in ('/', '') else ''
     return f"""
 <body class="pub-site">
 <div class="pub-progress" id="pub-progress"></div>
@@ -819,13 +820,13 @@ def shell_header(site: SiteData, active: str = '') -> str:
         </button>
       </div>
     </div>
-    <nav class="pub-nav" aria-label="Main">
-      <div class="pub-nav__inner">
-        <a class="pub-nav__link{home_active}" href="{u('/')}">Home</a>
-        {cat_nav}
-      </div>
-    </nav>
   </div>
+  <nav class="pub-nav" aria-label="Main">
+    <div class="pub-container pub-nav__inner">
+      <a class="pub-nav__link{home_active}" href="{u('/')}">Home</a>
+      {cat_nav}
+    </div>
+  </nav>
 </header>"""
 
 
@@ -902,6 +903,44 @@ def collect_browse_links(
     for art in articles:
         add(art.title, art.path)
     return links[:limit]
+
+
+def build_nav_menus(hub_by_path: dict[str, HubPage], articles: list[Article]) -> dict[str, list[tuple[str, str]]]:
+    menus: dict[str, list[tuple[str, str]]] = {}
+    for _lbl, hub_path in PRIMARY_NAV:
+        hub = hub_by_path.get(hub_path)
+        links: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        if hub:
+            links.append((hub.cat.title, hub_path))
+            seen.add(hub_path)
+        for title, path in collect_browse_links(hub, articles, hub_path, limit=16):
+            if path in seen:
+                continue
+            seen.add(path)
+            links.append((title, path))
+        menus[hub_path] = links
+    return menus
+
+
+def nav_dropdown_item(label: str, hub_path: str, links: list[tuple[str, str]], active: str) -> str:
+    is_active = nav_is_active(active, hub_path)
+    if not links:
+        cls = ' pub-nav__link--solo' if is_active else ''
+        return (
+            f'<a class="pub-nav__link{cls}{" is-active" if is_active else ""}" '
+            f'href="{html.escape(u(hub_path))}">{html.escape(label)}</a>'
+        )
+    items = ''.join(
+        f'<a class="pub-nav__dropdown-link" href="{html.escape(u(path))}" role="menuitem">'
+        f'{html.escape(title)}</a>'
+        for title, path in links
+    )
+    active_cls = ' is-active' if is_active else ''
+    return f"""<div class="pub-nav__item{active_cls}" data-pub-nav-dropdown>
+  <a class="pub-nav__link" href="{html.escape(u(hub_path))}">{html.escape(label)}<span class="pub-nav__chev" aria-hidden="true"></span></a>
+  <div class="pub-nav__dropdown" role="menu">{items}</div>
+</div>"""
 
 
 def collect_atoz_links(
@@ -1598,6 +1637,8 @@ def build(raw_dir: Path, out_dir: Path, fetch_remote: bool = False, base_url: st
         backfill_article_images(hub.articles, by_path, images)
         for topic in hub.topics:
             backfill_article_images(topic.articles, by_path, images)
+
+    site.nav_menus = build_nav_menus(hub_by_path, site.articles)
 
     # Homepage (after hubs enriched for browse grids)
     (out_dir / 'index.html').write_text(render_homepage(site, hub_by_path), encoding='utf-8')

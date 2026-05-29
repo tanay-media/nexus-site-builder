@@ -14,6 +14,21 @@
     });
   }
 
+  /* Nav dropdowns — tap to expand on mobile */
+  document.querySelectorAll('[data-pub-nav-dropdown]').forEach((item) => {
+    const link = item.querySelector('.pub-nav__link');
+    if (!link) return;
+    link.addEventListener('click', (e) => {
+      if (!window.matchMedia('(max-width: 899px)').matches) return;
+      e.preventDefault();
+      const wasOpen = item.classList.contains('is-open');
+      document.querySelectorAll('[data-pub-nav-dropdown].is-open').forEach((el) => {
+        el.classList.remove('is-open');
+      });
+      if (!wasOpen) item.classList.add('is-open');
+    });
+  });
+
   /* Category filter tabs */
   document.querySelectorAll('[data-pub-filter]').forEach((btn) => {
     btn.addEventListener('click', () => {
